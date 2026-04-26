@@ -320,11 +320,15 @@ export class RvmViewer3D {
             if (object.isMesh) {
                 object.geometry.dispose();
                 if (object.material) {
-                    if (Array.isArray(object.material)) {
-                        object.material.forEach(m => m.dispose());
-                    } else {
-                        object.material.dispose();
-                    }
+                    const materials = Array.isArray(object.material) ? object.material : [object.material];
+                    materials.forEach(m => {
+                        for (const key in m) {
+                            if (m[key] && m[key].isTexture) {
+                                m[key].dispose();
+                            }
+                        }
+                        m.dispose();
+                    });
                 }
             }
         });
@@ -351,5 +355,11 @@ export class RvmViewer3D {
         this.controls = null;
         this.modelGroup = null;
         this.container = null;
+
+        // Disposal contract explicitly requested these nullifications
+        this.searchIndex = null;
+        this.tagStore = null;
+        this.workerBridges = null;
+        this.pendingLoadTasks = null;
     }
 }
