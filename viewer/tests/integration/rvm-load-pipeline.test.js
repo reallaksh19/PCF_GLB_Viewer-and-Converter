@@ -50,7 +50,8 @@ mockCtx.staticBundleLoader.gltfLoader = {
   load: (url, onLoad, onProgress, onError) => {
     setTimeout(() => {
       onProgress({ lengthComputable: true, loaded: 50, total: 100 });
-      if (url.includes('invalid')) {
+      const urlStr = String(url);
+      if (urlStr.includes('invalid')) {
         onError(new Error('GLB Load Failed'));
       } else {
         onProgress({ lengthComputable: true, loaded: 100, total: 100 });

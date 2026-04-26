@@ -33,17 +33,21 @@ export class RvmStaticBundleLoader {
       throw new Error(errMessage);
     }
 
-    // Since we're in static bundle loader, the artifacts are usually fetched relative to some path.
-    // For now, assume ctx provides a way to fetch the files, e.g. via an ArrayBuffer mapping if uploaded,
-    // or via urls. We will just use `ctx.getFile` which could return a Blob/ArrayBuffer/Response.
-    // If we're loading a static bundle by File list, ctx might map filenames.
-    // We will assume `ctx.getFileUrl(filename)` exists and returns a fetchable URL or data URI.
+    // Since we are loading bundles directly mapped in the objects,
+    // the artifacts should already be resolved as valid fetchable URLs or Blob URLs by the caller.
+    // If not provided in a resolvable format, we treat the artifact string itself as the URL.
+
+    const resolveUrl = async (url) => {
+      if (typeof ctx.resolveUrl === 'function') return await ctx.resolveUrl(url);
+      if (typeof ctx.getFileUrl === 'function') return await ctx.getFileUrl(url); // legacy fallback for tests
+      return url;
+    };
 
     // 2. GLB
     asyncSession.update('glb', 20);
     let gltf;
     try {
-      const glbUrl = await ctx.getFileUrl(manifest.artifacts.glb);
+      const glbUrl = await resolveUrl(manifest.artifacts.glb);
       gltf = await new Promise((resolve, reject) => {
         this.gltfLoader.load(
           glbUrl,
@@ -69,7 +73,7 @@ export class RvmStaticBundleLoader {
     let indexJson = null;
     if (manifest.artifacts.index) {
       try {
-        const indexUrl = await ctx.getFileUrl(manifest.artifacts.index);
+        const indexUrl = await resolveUrl(manifest.artifacts.index);
         const res = await fetch(indexUrl);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         indexJson = await res.json();
@@ -79,8 +83,6 @@ export class RvmStaticBundleLoader {
         }
       } catch (err) {
         RvmDiagnostics.report('error', 'Index JSON Load Error', `Failed to load ${manifest.artifacts.index}: ${err.message}`);
-        // We do not fail the load entirely if index is missing, or do we? Wait, usually we proceed but with warnings.
-        // We'll let it continue.
       }
     }
 
@@ -91,7 +93,7 @@ export class RvmStaticBundleLoader {
     let tagXmlText = null;
     if (manifest.artifacts.tags) {
       try {
-        const tagsUrl = await ctx.getFileUrl(manifest.artifacts.tags);
+        const tagsUrl = await resolveUrl(manifest.artifacts.tags);
         const res = await fetch(tagsUrl);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         tagXmlText = await res.text();
