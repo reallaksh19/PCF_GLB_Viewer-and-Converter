@@ -13,6 +13,7 @@ const tests = [
   './integration/interchange-export-smoke.test.js',
   './integration/model-exchange-ui.test.js',
   './integration/export-roundtrip.test.js',
+  './integration/rvm-load-pipeline.test.js',
 ];
 
 for (const rel of tests) {
