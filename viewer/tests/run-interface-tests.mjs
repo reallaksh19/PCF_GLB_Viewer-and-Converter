@@ -20,14 +20,18 @@ const tests = [
   './unit/rvm/rvm-capabilities.test.js',
   './integration/rvm-tab-shell.test.js',
   './integration/rvm-load-pipeline.test.js',
+  './unit/rvm/rvm-tag-xml.test.js',
+  './unit/rvm/rvm-saved-views.test.js',
+  './unit/rvm/rvm-assisted.test.js',
 ];
 
 for (const rel of tests) {
   const abs = path.join(__dirname, rel);
   const importUrl = pathToFileURL(abs).href;
   const runnerScript = `
-    global.localStorage = { getItem: () => null, setItem: () => {} };
-    global.window = { localStorage: global.localStorage };
+    global.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {}, length: 0, key: () => null };
+    global.sessionStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {}, length: 0, key: () => null };
+    global.window = { localStorage: global.localStorage, sessionStorage: global.sessionStorage };
     if (!global.crypto) global.crypto = { randomUUID: () => Math.random().toString() };
     import(${JSON.stringify(importUrl)});
   `;
