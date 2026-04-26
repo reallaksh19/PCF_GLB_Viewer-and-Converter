@@ -12,6 +12,7 @@ import { JSDOM } from 'jsdom';
 const dom = new JSDOM();
 global.DOMParser = dom.window.DOMParser;
 global.XMLSerializer = dom.window.XMLSerializer;
+global.document = dom.window.document;
 
 function mockIdentityMap() {
   const map = new RvmIdentityMap();

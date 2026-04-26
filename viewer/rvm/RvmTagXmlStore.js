@@ -76,53 +76,77 @@ export class RvmTagXmlStore {
     saveStickyState();
   }
 
-  // Helper to escape XML
-  _escapeXml(unsafe) {
-    if (!unsafe) return '';
-    return unsafe.replace(/[<>&'"]/g, (c) => {
-      switch (c) {
-        case '<': return '&lt;';
-        case '>': return '&gt;';
-        case '&': return '&amp;';
-        case '\'': return '&apos;';
-        case '"': return '&quot;';
-        default: return c;
-      }
-    });
-  }
-
   exportToXml() {
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
-    xml += `<ReviewTags schemaVersion="${SCHEMA_VERSION}" bundleId="${this._escapeXml(this.bundleId)}">\n`;
-
-    for (const tag of this.tags.values()) {
-      xml += `  <Tag id="${this._escapeXml(tag.id)}">\n`;
-      xml += `    <CanonicalObjectId>${this._escapeXml(tag.canonicalObjectId)}</CanonicalObjectId>\n`;
-      if (tag.sourceObjectId) {
-        xml += `    <SourceObjectId>${this._escapeXml(tag.sourceObjectId)}</SourceObjectId>\n`;
-      }
-      xml += `    <AnchorType>${this._escapeXml(tag.anchorType)}</AnchorType>\n`;
-      xml += `    <Text>${this._escapeXml(tag.text)}</Text>\n`;
-      xml += `    <Severity>${this._escapeXml(tag.severity)}</Severity>\n`;
-      if (tag.viewStateRef) {
-        xml += `    <ViewStateRef>${this._escapeXml(tag.viewStateRef)}</ViewStateRef>\n`;
-      }
-      if (tag.worldPosition) {
-        xml += `    <WorldPosition x="${tag.worldPosition.x}" y="${tag.worldPosition.y}" z="${tag.worldPosition.z}" />\n`;
-      }
-      if (tag.cameraState) {
-        // Serialize camera state if needed for self-contained tags, though normally it's referenced by viewStateRef.
-        // Format can be custom
-        xml += `    <CameraState>\n`;
-        xml += `      <Position x="${tag.cameraState.position.x}" y="${tag.cameraState.position.y}" z="${tag.cameraState.position.z}" />\n`;
-        xml += `      <Target x="${tag.cameraState.target.x}" y="${tag.cameraState.target.y}" z="${tag.cameraState.target.z}" />\n`;
-        xml += `    </CameraState>\n`;
-      }
-      xml += `  </Tag>\n`;
+    const doc = document.implementation.createDocument(null, 'ReviewTags');
+    const root = doc.documentElement;
+    root.setAttribute('schemaVersion', SCHEMA_VERSION);
+    if (this.bundleId) {
+      root.setAttribute('bundleId', this.bundleId);
     }
 
-    xml += `</ReviewTags>`;
-    return xml;
+    for (const tag of this.tags.values()) {
+      const tagEl = doc.createElement('Tag');
+      tagEl.setAttribute('id', tag.id);
+
+      const canonicalEl = doc.createElement('CanonicalObjectId');
+      canonicalEl.textContent = tag.canonicalObjectId || '';
+      tagEl.appendChild(canonicalEl);
+
+      if (tag.sourceObjectId) {
+        const sourceEl = doc.createElement('SourceObjectId');
+        sourceEl.textContent = tag.sourceObjectId;
+        tagEl.appendChild(sourceEl);
+      }
+
+      const anchorEl = doc.createElement('AnchorType');
+      anchorEl.textContent = tag.anchorType || 'object';
+      tagEl.appendChild(anchorEl);
+
+      const textEl = doc.createElement('Text');
+      textEl.textContent = tag.text || '';
+      tagEl.appendChild(textEl);
+
+      const severityEl = doc.createElement('Severity');
+      severityEl.textContent = tag.severity || 'info';
+      tagEl.appendChild(severityEl);
+
+      if (tag.viewStateRef) {
+        const viewRefEl = doc.createElement('ViewStateRef');
+        viewRefEl.textContent = tag.viewStateRef;
+        tagEl.appendChild(viewRefEl);
+      }
+
+      if (tag.worldPosition) {
+        const wpEl = doc.createElement('WorldPosition');
+        wpEl.setAttribute('x', tag.worldPosition.x);
+        wpEl.setAttribute('y', tag.worldPosition.y);
+        wpEl.setAttribute('z', tag.worldPosition.z);
+        tagEl.appendChild(wpEl);
+      }
+
+      if (tag.cameraState) {
+        const camEl = doc.createElement('CameraState');
+        const posEl = doc.createElement('Position');
+        posEl.setAttribute('x', tag.cameraState.position.x);
+        posEl.setAttribute('y', tag.cameraState.position.y);
+        posEl.setAttribute('z', tag.cameraState.position.z);
+        camEl.appendChild(posEl);
+
+        const tgtEl = doc.createElement('Target');
+        tgtEl.setAttribute('x', tag.cameraState.target.x);
+        tgtEl.setAttribute('y', tag.cameraState.target.y);
+        tgtEl.setAttribute('z', tag.cameraState.target.z);
+        camEl.appendChild(tgtEl);
+
+        tagEl.appendChild(camEl);
+      }
+
+      root.appendChild(tagEl);
+    }
+
+    const serializer = new XMLSerializer();
+    const xmlString = serializer.serializeToString(doc);
+    return `<?xml version="1.0" encoding="UTF-8"?>\n${xmlString}`;
   }
 
   importFromXml(xmlString) {
