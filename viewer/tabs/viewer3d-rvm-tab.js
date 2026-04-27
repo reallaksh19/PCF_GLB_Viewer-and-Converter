@@ -1,6 +1,6 @@
 import { RuntimeEvents } from '../contracts/runtime-events.js';
 import { state, saveStickyState } from '../core/state.js';
-import { on, emit } from '../core/event-bus.js';
+import { on, off, emit } from '../core/event-bus.js';
 import { detectRvmCapabilities } from '../rvm/RvmCapabilities.js';
 import { notify } from '../diagnostics/notification-center.js';
 import { RvmViewer3D } from '../rvm-viewer/RvmViewer3D.js';
@@ -224,16 +224,23 @@ function _bindResize(container) {
 // ── Tab event listener (TAB_CHANGED) ───────────────────────────────────────
 
 function _bindTabListener() {
-  const off = on(RuntimeEvents.TAB_CHANGED, ({ tabId }) => {
+  const tabChangedCallback = ({ tabId }) => {
     if (tabId !== 'viewer3d-rvm') _disposeRvmViewer();
-  });
-  const offLoad = on(RuntimeEvents.RVM_MODEL_LOADED, (payload) => {
+  };
+  const modelLoadedCallback = (payload) => {
     if (_viewer && payload && payload.gltf && payload.gltf.scene) {
         _viewer.setModel(payload.gltf.scene, payload.manifest?.runtime?.upAxis);
         _viewer.fitAll();
     }
-  });
-  _capabilitiesListenerOff = () => { off(); offLoad(); };
+  };
+
+  on(RuntimeEvents.TAB_CHANGED, tabChangedCallback);
+  on(RuntimeEvents.RVM_MODEL_LOADED, modelLoadedCallback);
+
+  _capabilitiesListenerOff = () => {
+    off(RuntimeEvents.TAB_CHANGED, tabChangedCallback);
+    off(RuntimeEvents.RVM_MODEL_LOADED, modelLoadedCallback);
+  };
 }
 
 // ── Public render function ─────────────────────────────────────────────────
