@@ -3,6 +3,8 @@ import { state, saveStickyState } from '../core/state.js';
 import { on, emit } from '../core/event-bus.js';
 import { detectRvmCapabilities } from '../rvm/RvmCapabilities.js';
 import { notify } from '../diagnostics/notification-center.js';
+import { RvmViewer3D } from '../rvm-viewer/RvmViewer3D.js';
+import { rvmIdentityMap } from '../rvm/RvmIdentityMap.js';
 
 let _viewer = null;
 let _shortcutHandler = null;
@@ -246,8 +248,8 @@ export function renderViewer3DRvm(container) {
   _bindShortcuts(container);
   _bindTabListener();
 
-  // Initialise viewer stub (replaced by RvmViewer3D in Agent 3)
-  _viewer = _createViewerStub(container);
+  // Initialize the actual RvmViewer3D instance
+  _viewer = new RvmViewer3D(container, { identityMap: rvmIdentityMap });
 
   // Async capability probe — update banner once resolved
   detectRvmCapabilities(null).then((resolvedCaps) => {
