@@ -91,7 +91,11 @@ function _bindGlobalEvents() {
           assistedBridge: activeBridge
         };
 
-        await loadRvmSource({ kind: 'raw-rvm', file: payload.payload }, ctx);
+        const loadPayload = payload.kind === 'bundle'
+            ? { kind: 'bundle', bundle: payload.payload }
+            : { kind: 'raw-rvm', file: payload.payload };
+
+        await loadRvmSource(loadPayload, ctx);
       } catch (err) {
         console.error('RVM Load Pipeline failed:', err);
         alert(err.message);

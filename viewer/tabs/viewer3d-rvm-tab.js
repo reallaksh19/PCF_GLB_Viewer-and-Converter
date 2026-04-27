@@ -88,17 +88,12 @@ function _bindBundleLoader(container) {
   input.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      const text = await file.text();
-      const json = JSON.parse(text);
-      state.rvm.manifest = json;
-      state.rvm.activeBundle = json.bundleId || null;
-      saveStickyState();
-      emit(RuntimeEvents.RVM_CONFIG_CHANGED, { reason: 'bundle-loaded' });
-      notify({ type: 'info', message: `RVM bundle loaded: ${json.bundleId || file.name}` });
-    } catch (err) {
-      notify({ type: 'error', message: `Failed to load bundle manifest: ${err.message}` });
-    }
+    emit(RuntimeEvents.FILE_LOADED, {
+        name: file.name,
+        source: 'rvm-tab',
+        payload: file,
+        kind: 'bundle'
+    });
   });
 }
 
