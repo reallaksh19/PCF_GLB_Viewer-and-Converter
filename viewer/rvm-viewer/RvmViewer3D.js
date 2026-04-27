@@ -20,10 +20,25 @@ export class RvmViewer3D {
         const height = this.container.clientHeight || 600;
 
         // Camera setup
-        this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100000);
-        this.camera.position.set(100, 100, 100);
-        this.camera.lookAt(0, 0, 0);
-        this.camera.up.set(0, 1, 0);
+        this.perspCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100000);
+        this.perspCamera.position.set(100, 100, 100);
+        this.perspCamera.lookAt(0, 0, 0);
+        this.perspCamera.up.set(0, 1, 0);
+
+        // Orthographic Camera setup
+        const aspect = width / height;
+        const frustumSize = 1000;
+        this.orthoCamera = new THREE.OrthographicCamera(
+            -frustumSize * aspect / 2, frustumSize * aspect / 2,
+            frustumSize / 2, -frustumSize / 2,
+            0.1, 100000
+        );
+        this.orthoCamera.position.set(100, 100, 100);
+        this.orthoCamera.lookAt(0, 0, 0);
+        this.orthoCamera.up.set(0, 1, 0);
+
+        this.camera = this.perspCamera;
+        this._isOrthographic = false;
 
         // WebGL Renderer
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -119,8 +134,18 @@ export class RvmViewer3D {
         if (width === 0 || height === 0) return;
 
 
-        this.camera.aspect = width / height;
-        this.camera.updateProjectionMatrix();
+        if (this._isOrthographic) {
+            const aspect = width / height;
+            const frustumSize = (this.orthoCamera.top - this.orthoCamera.bottom); // roughly maintain height
+            this.orthoCamera.left = -frustumSize * aspect / 2;
+            this.orthoCamera.right = frustumSize * aspect / 2;
+            this.orthoCamera.top = frustumSize / 2;
+            this.orthoCamera.bottom = -frustumSize / 2;
+            this.orthoCamera.updateProjectionMatrix();
+        } else {
+            this.perspCamera.aspect = width / height;
+            this.perspCamera.updateProjectionMatrix();
+        }
         this.renderer.setSize(width, height);
         this.labelRenderer.setSize(width, height);
     }
@@ -174,8 +199,14 @@ export class RvmViewer3D {
         const center = box.getCenter(new THREE.Vector3());
 
         const maxSize = Math.max(size.x, size.y, size.z);
-        const fitHeightDistance = maxSize / (2 * Math.atan(Math.PI * this.camera.fov / 360));
-        const fitWidthDistance = fitHeightDistance / this.camera.aspect;
+        let fitHeightDistance;
+        if (this._isOrthographic) {
+            fitHeightDistance = maxSize * 1.2;
+        } else {
+            fitHeightDistance = maxSize / (2 * Math.atan(Math.PI * this.camera.fov / 360));
+        }
+        const aspect = this._isOrthographic ? (this.orthoCamera.right - this.orthoCamera.left) / (this.orthoCamera.top - this.orthoCamera.bottom) : this.perspCamera.aspect;
+        const fitWidthDistance = fitHeightDistance / aspect;
         const distance = 1.2 * Math.max(fitHeightDistance, fitWidthDistance);
 
         const direction = this.controls.target.clone().sub(this.camera.position).normalize().multiplyScalar(-1);
@@ -183,6 +214,13 @@ export class RvmViewer3D {
 
         this.controls.target.copy(center);
         this.camera.position.copy(center).add(direction.multiplyScalar(distance));
+
+        if (this._isOrthographic) {
+            this.orthoCamera.left = -distance * aspect / 2;
+            this.orthoCamera.right = distance * aspect / 2;
+            this.orthoCamera.top = distance / 2;
+            this.orthoCamera.bottom = -distance / 2;
+        }
         this.camera.near = distance / 100;
         this.camera.far = distance * 100;
         this.camera.updateProjectionMatrix();
@@ -212,9 +250,32 @@ export class RvmViewer3D {
     }
 
     toggleProjection() {
-        // Perspective to Orthographic, or vice-versa.
-        // Simplified: only Perspective is handled in this skeleton unless fully implemented.
-        console.warn('toggleProjection not fully implemented in RvmViewer3D');
+        this._isOrthographic = !this._isOrthographic;
+
+        const oldCamera = this.camera;
+        this.camera = this._isOrthographic ? this.orthoCamera : this.perspCamera;
+
+        this.camera.position.copy(oldCamera.position);
+        this.camera.quaternion.copy(oldCamera.quaternion);
+
+        if (this._isOrthographic) {
+            // Estimate frustum size based on distance to target to keep apparent size roughly similar
+            const distance = this.controls.target.distanceTo(this.perspCamera.position);
+            const fov = this.perspCamera.fov * Math.PI / 180;
+            const frustumHeight = 2 * distance * Math.tan(fov / 2);
+            const aspect = this.container.clientWidth / this.container.clientHeight;
+
+            this.orthoCamera.left = -frustumHeight * aspect / 2;
+            this.orthoCamera.right = frustumHeight * aspect / 2;
+            this.orthoCamera.top = frustumHeight / 2;
+            this.orthoCamera.bottom = -frustumHeight / 2;
+        }
+
+        this.camera.updateProjectionMatrix();
+
+        this.controls.object = this.camera;
+        this.controls.update();
+        this.selection._camera = this.camera; // update selection camera
     }
 
     snapToPreset(preset) {
@@ -417,6 +478,8 @@ export class RvmViewer3D {
         // Nullify internal refs
         this.scene = null;
         this.camera = null;
+        this.perspCamera = null;
+        this.orthoCamera = null;
         this.renderer = null;
         this.labelRenderer = null;
         this.controls = null;

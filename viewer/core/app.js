@@ -12,6 +12,7 @@ import { initDevDebugWindow, destroyDevDebugWindow } from '../debug/dev-debug-wi
 import { loadRvmSource } from '../rvm/RvmLoadPipeline.js';
 import { RvmStaticBundleLoader } from '../rvm/RvmStaticBundleLoader.js';
 import { RvmHelperBridge } from '../converters/rvm-helper-bridge.js';
+import { RvmGitHubActionsBridge } from '../converters/rvm-github-bridge.js';
 
 const TAB_CONFIG_URL = './opt/tab-visibility.json';
 
@@ -56,15 +57,44 @@ function _bindGlobalEvents() {
              caps = { rawRvmImport: true, deploymentMode: 'assisted' };
         }
 
+        // 1. Check if the local Node.js test server bridge is alive
+        const localBridge = new RvmHelperBridge();
+        const localProbe = await localBridge.probe();
+
+        // 2. Instantiate the GitHub Actions serverless fallback
+        const ghBridge = new RvmGitHubActionsBridge();
+        const ghProbe = await ghBridge.probe();
+
+        let activeBridge = null;
+
+        if (localProbe.reachable) {
+            activeBridge = localBridge;
+            console.log("Using Local test_server RvmHelperBridge");
+        } else if (ghProbe.reachable) {
+            activeBridge = ghBridge;
+            console.log("Using serverless RvmGitHubActionsBridge");
+        } else {
+            // Prompt the user for a PAT to enable serverless mode if everything is dead
+            const pat = prompt("No local conversion server found. Enter a GitHub Personal Access Token (PAT) to enable remote serverless conversion via GitHub Actions:");
+            if (pat) {
+                ghBridge.setPat(pat);
+                activeBridge = ghBridge;
+                console.log("Configured serverless RvmGitHubActionsBridge with new PAT");
+            } else {
+                throw new Error("No available RVM conversion backends. Start the local server or provide a GitHub PAT.");
+            }
+        }
+
         const ctx = {
           capabilities: caps,
           staticBundleLoader: new RvmStaticBundleLoader(),
-          assistedBridge: new RvmHelperBridge()
+          assistedBridge: activeBridge
         };
 
         await loadRvmSource({ kind: 'raw-rvm', file: payload.payload }, ctx);
       } catch (err) {
         console.error('RVM Load Pipeline failed:', err);
+        alert(err.message);
       }
     }
   });
