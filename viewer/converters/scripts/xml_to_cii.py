@@ -41,6 +41,10 @@ OPEN_END_STIFFNESS: Final[float] = 9.41952e19
 DEFAULT_LINEAR_STIFFNESS: Final[float] = 1.75127e12
 BEND_FLEXIBILITY_CONSTANT: Final[float] = -2.0202
 VERSION_SUFFIX: Final[str] = "psi2cii.exe version 3.1.0.3 (Feb 21 2024)"
+DEFAULT_VERSION_LINE: Final[str] = "        5.00000      11.0000    1252"
+ELEMENT_BLOCK_LONG_ZERO_LINE: Final[str] = "           0" + (" " * 501)
+ELEMENT_BLOCK_NODE_REF_LINE: Final[str] = "             -1           -1"
+RESTRAINT_LONG_ZERO_LINE: Final[str] = "           0" + (" " * 101)
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,7 @@ class XmlNode:
     corrosion_allowance: float
     insulation_thickness: float
     bend_radius: float
+    bend_type: int | None
     position: tuple[float, float, float]
     restraint_spec: RestraintSpec | None
 
@@ -89,6 +94,7 @@ class XmlMetadata:
     mdb_name: str
     title_lines: list[str]
     restrain_open_ends: bool
+    ambient_temperature: float
 
 
 @dataclass(frozen=True)
@@ -128,6 +134,11 @@ class ConversionModel:
     edge_to_reducer_index: dict[int, int]
     restraints: list[AssignedRestraint]
     edge_to_restraint_index: dict[int, int]
+
+
+def _map_position_to_cii(position: tuple[float, float, float]) -> tuple[float, float, float]:
+    # CII benchmark convention maps XML XYZ to CII XZY with Y-axis sign flip.
+    return (position[0], position[2], -position[1])
 
 
 def _safe_text(value: str | None) -> str:
@@ -205,17 +216,19 @@ def _parse_yes_no(value: str, field_name: str) -> bool:
 
 def _restraint_type_to_code(restraint_type: str) -> int:
     normalized = _safe_text(restraint_type).upper()
+    if normalized.startswith("+") or normalized.startswith("-"):
+        normalized = normalized[1:]
     if normalized == "X":
-        return 2
+        return 17
     if normalized == "Y":
-        return 3
+        return 18
     if normalized == "Z":
-        return 4
+        return 19
     if normalized in {"A", "ANCHOR", "FIXED", "FIX"}:
         return 1
     raise ValueError(
         f"Unsupported restraint type '{restraint_type}'. "
-        "Supported values: X, Y, Z, A/ANCHOR/FIXED."
+        "Supported values: +/-X, +/-Y, +/-Z, A/ANCHOR/FIXED."
     )
 
 
@@ -315,6 +328,10 @@ def _parse_xml_document(path: Path) -> XmlDocument:
         mdb_name=_child_text(root, namespace, "MDBName"),
         title_lines=[_safe_text(element.text) for element in root.findall(_q(namespace, "TitleLine"))],
         restrain_open_ends=_parse_yes_no(_child_text(root, namespace, "RestrainOpenEnds"), "RestrainOpenEnds"),
+        ambient_temperature=(
+            _parse_optional_float(_child_text(root, namespace, "AmbientTemperature"), "AmbientTemperature")
+            or 0.0
+        ),
     )
 
     pipes = root.findall(_q(namespace, "Pipe"))
@@ -369,6 +386,10 @@ def _parse_xml_document(path: Path) -> XmlDocument:
                 )
                 if bend_radius_value is None:
                     bend_radius_value = 0.0
+                bend_type_value = _parse_optional_int(
+                    _child_text(node_element, namespace, "BendType"),
+                    "Node/BendType",
+                )
                 outside_diameter_value = _parse_optional_float(
                     _child_text(node_element, namespace, "OutsideDiameter"),
                     "Node/OutsideDiameter",
@@ -389,6 +410,7 @@ def _parse_xml_document(path: Path) -> XmlDocument:
                         corrosion_allowance=corrosion_allowance_value,
                         insulation_thickness=insulation_thickness_value,
                         bend_radius=bend_radius_value,
+                        bend_type=bend_type_value,
                         position=_parse_position(position_text),
                         restraint_spec=_parse_restraint(node_element, namespace),
                     )
@@ -442,11 +464,11 @@ def _build_nodename_lines(edges: list[Edge]) -> tuple[list[str], dict[int, int]]
     edge_to_index: dict[int, int] = {}
 
     for edge_index, edge in enumerate(edges):
-        left = _safe_text(edge.from_node.node_name)[:10]
-        right = _safe_text(edge.to_node.node_name)[:10]
+        left = _safe_text(edge.from_node.node_name)[:25]
+        right = _safe_text(edge.to_node.node_name)[:25]
         if not left and not right:
             continue
-        lines.append(f"  {left:<18}{right:>18}")
+        lines.append(f"  {left:<26}{right:<25}")
         edge_to_index[edge_index] = len(lines)
 
     return lines, edge_to_index
@@ -466,7 +488,9 @@ def _build_rigid_indices(edges: list[Edge]) -> tuple[list[Edge], dict[int, int]]
     rigid_edges: list[Edge] = []
     edge_to_index: dict[int, int] = {}
     for edge_index, edge in enumerate(edges):
-        if edge.to_node.rigid == 2 or (edge.from_node.rigid == 2 and edge.to_node.rigid == 1):
+        if edge.to_node.rigid == 2 or (
+            edge.from_node.rigid == 2 and edge.to_node.component_type == "FLAN"
+        ):
             rigid_edges.append(edge)
             edge_to_index[edge_index] = len(rigid_edges)
     return rigid_edges, edge_to_index
@@ -486,7 +510,7 @@ def _build_reducer_indices(edges: list[Edge]) -> tuple[list[Edge], dict[int, int
     reducer_edges: list[Edge] = []
     edge_to_index: dict[int, int] = {}
     for edge_index, edge in enumerate(edges):
-        if edge.to_node.alpha_angle is not None:
+        if edge.to_node.alpha_angle is not None and abs(edge.to_node.alpha_angle) > 1e-9:
             reducer_edges.append(edge)
             edge_to_index[edge_index] = len(reducer_edges)
     return reducer_edges, edge_to_index
@@ -652,18 +676,37 @@ def _section_header(name: str) -> str:
     return f"#$ {name}"
 
 
-def _build_version_payload(metadata: XmlMetadata) -> list[str]:
+def _resolve_template_version_line(template_cii: Path | None) -> str:
+    def _format_template_tokens(line: str) -> str:
+        tokens = line.split()
+        if len(tokens) < 3:
+            return line
+        try:
+            major = float(tokens[0])
+            minor = float(tokens[1])
+            build = int(float(tokens[2]))
+        except ValueError:
+            return line
+        return f"{major:15.5f}{minor:13.4f}{build:8d}"
+
+    if template_cii is None:
+        return DEFAULT_VERSION_LINE
+    template_lines = template_cii.read_text(encoding="utf-8").splitlines()
+    try:
+        version_index = template_lines.index("#$ VERSION")
+    except ValueError:
+        return DEFAULT_VERSION_LINE
+    if version_index + 1 >= len(template_lines):
+        return DEFAULT_VERSION_LINE
+    line = template_lines[version_index + 1]
+    if not _safe_text(line):
+        return DEFAULT_VERSION_LINE
+    return _format_template_tokens(line)
+
+
+def _build_version_payload(metadata: XmlMetadata, version_header_line: str) -> list[str]:
     payload: list[str] = []
-    payload.append(
-        _row(
-            [
-                _format_fixed_float(4.0, 5),
-                _format_fixed_float(4.5, 5),
-                _format_fixed_float(0.0, 6),
-                _format_fixed_float(0.0, 6),
-            ]
-        )
-    )
+    payload.append(version_header_line)
     payload.append(f"  DateTime: {metadata.date_time}")
     payload.append(f"  Source: {metadata.source}")
     payload.append(f"  Version: {metadata.version} ({VERSION_SUFFIX})")
@@ -707,9 +750,11 @@ def _build_elements_payload(model: ConversionModel) -> list[str]:
     for edge_index, edge in enumerate(model.edges):
         from_node = edge.from_node
         to_node = edge.to_node
-        dx = to_node.position[0] - from_node.position[0]
-        dy = to_node.position[1] - from_node.position[1]
-        dz = to_node.position[2] - from_node.position[2]
+        mapped_from = _map_position_to_cii(from_node.position)
+        mapped_to = _map_position_to_cii(to_node.position)
+        dx = mapped_to[0] - mapped_from[0]
+        dy = mapped_to[1] - mapped_from[1]
+        dz = mapped_to[2] - mapped_from[2]
         outside_diameter = _element_outside_diameter(edge)
 
         line1 = _row(
@@ -740,7 +785,7 @@ def _build_elements_payload(model: ConversionModel) -> list[str]:
         nodename_index = model.edge_to_nodename_index.get(edge_index, 0)
         reducer_index = model.edge_to_reducer_index.get(edge_index, 0)
 
-        line7 = _row(
+        line13 = _row(
             [
                 str(bend_index),
                 str(rigid_index),
@@ -750,7 +795,7 @@ def _build_elements_payload(model: ConversionModel) -> list[str]:
                 "0",
             ]
         )
-        line8 = _row(
+        line14 = _row(
             [
                 "0",
                 "0",
@@ -760,9 +805,35 @@ def _build_elements_payload(model: ConversionModel) -> list[str]:
                 str(nodename_index),
             ]
         )
-        line9 = _row([str(reducer_index)])
+        line15 = _row([str(reducer_index), "0", "0"])
 
-        lines.extend([line1, line2, zero_line, zero_line, zero_line, zero_line, line7, line8, line9])
+        lines.extend(
+            [
+                line1,
+                line2,
+                zero_line,
+                zero_line,
+                zero_line,
+                zero_line,
+                zero_line,
+                zero_line,
+                _row(
+                    [
+                        _format_fixed_float(0.0, 6),
+                        _format_fixed_float(0.0, 6),
+                        _format_fixed_float(0.0, 6),
+                        _format_fixed_float(0.0, 6),
+                        _format_fixed_float(0.0, 6),
+                    ]
+                ),
+                ELEMENT_BLOCK_LONG_ZERO_LINE,
+                ELEMENT_BLOCK_LONG_ZERO_LINE,
+                ELEMENT_BLOCK_NODE_REF_LINE,
+                line13,
+                line14,
+                line15,
+            ]
+        )
 
     return lines
 
@@ -770,10 +841,11 @@ def _build_elements_payload(model: ConversionModel) -> list[str]:
 def _build_bend_payload(model: ConversionModel) -> list[str]:
     lines: list[str] = []
     for edge in model.bend_edges:
+        bend_type_value = 0.0 if edge.to_node.bend_type is None else float(edge.to_node.bend_type)
         line1 = _row(
             [
                 _format_auto_float(edge.to_node.bend_radius if edge.to_node.bend_radius > 0.0 else _element_outside_diameter(edge)),
-                _format_fixed_float(0.0, 6),
+                _format_auto_float(bend_type_value),
                 _format_fixed_float(BEND_FLEXIBILITY_CONSTANT, 5),
                 _format_auto_float(float(edge.to_node.node_number - 1)),
                 _format_fixed_float(0.0, 6),
@@ -787,16 +859,23 @@ def _build_bend_payload(model: ConversionModel) -> list[str]:
                 _format_fixed_float(0.0, 6),
                 _format_fixed_float(0.0, 6),
                 _format_fixed_float(0.0, 6),
+                _format_fixed_float(0.0, 6),
             ]
         )
-        lines.extend([line1, line2])
+        line3 = _row(
+            [
+                _format_fixed_float(0.0, 6),
+                _format_fixed_float(0.0, 6),
+            ]
+        )
+        lines.extend([line1, line2, line3])
     return lines
 
 
 def _build_rigid_payload(model: ConversionModel) -> list[str]:
     lines: list[str] = []
     for _ in model.rigid_edges:
-        lines.append(_row([_format_fixed_float(0.0, 6)]))
+        lines.append(_row([_format_fixed_float(0.0, 6), _format_fixed_float(0.0, 6)]))
     return lines
 
 
@@ -812,7 +891,7 @@ def _build_restraint_payload(model: ConversionModel) -> list[str]:
         line1 = _row(
             [
                 _format_auto_float(float(assigned.node_number)),
-                _format_fixed_float(float(spec.type_code), 5),
+                _format_auto_float(float(spec.type_code)),
                 _format_auto_float(spec.stiffness),
                 _format_fixed_float(spec.gap, 6),
                 _format_fixed_float(spec.friction, 6),
@@ -843,7 +922,9 @@ def _build_restraint_payload(model: ConversionModel) -> list[str]:
                 _format_fixed_float(0.0, 6),
             ]
         )
-        lines.extend([line1, line2, line3, line4, line3, line4, line3, line4])
+        lines.extend([line1, line2, RESTRAINT_LONG_ZERO_LINE, RESTRAINT_LONG_ZERO_LINE])
+        for _ in range(5):
+            lines.extend([line3, line4, RESTRAINT_LONG_ZERO_LINE, RESTRAINT_LONG_ZERO_LINE])
     return lines
 
 
@@ -896,29 +977,32 @@ def _build_reducer_payload(model: ConversionModel) -> list[str]:
     return lines
 
 
-def _build_miscel_payload() -> list[str]:
-    return [
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000",
-        "        1.00000      1.00000      1.00000      1.00000      1.00000",
-        "              0            0            0            0     0.000000            0",
-        "              0            0      21.1111     0.000000            0            0",
-        "              0            0            0            0            0            0",
-    ]
+def _build_miscel_payload(metadata: XmlMetadata, element_count: int) -> list[str]:
+    lines: list[str] = []
+    full_rows = element_count // 6
+    remainder = element_count % 6
+    full_row = "        1.00000      1.00000      1.00000      1.00000      1.00000      1.00000"
+    for _ in range(full_rows):
+        lines.append(full_row)
+    if remainder > 0:
+        lines.append(_row(["1.00000"] * remainder))
+
+    lines.append("              0            0            0            0     0.000000            0")
+    lines.append(
+        _row(
+            [
+                "0",
+                "0",
+                _format_fixed_float(metadata.ambient_temperature, 4),
+                _format_fixed_float(0.0, 6),
+                "0",
+                "0",
+            ]
+        )
+    )
+    lines.append("              0            0            0            0            0            0")
+    lines.append(_row(["3"]))
+    return lines
 
 
 def _build_units_payload() -> list[str]:
@@ -967,28 +1051,29 @@ def _build_coords_payload(model: ConversionModel, coords_mode: str) -> list[str]
 
     payload = [_row([str(len(selected))])]
     for restraint in selected:
+        mapped = _map_position_to_cii(restraint.position)
         payload.append(
             _row(
                 [
                     str(restraint.node_number),
-                    _format_fixed_float(restraint.position[0], 4),
-                    _format_fixed_float(restraint.position[1], 4),
-                    _format_fixed_float(restraint.position[2], 4),
+                    _format_fixed_float(mapped[0], 4),
+                    _format_fixed_float(mapped[1], 4),
+                    _format_fixed_float(mapped[2], 4),
                 ]
             )
         )
     return payload
 
 
-def _build_cii_text(model: ConversionModel, coords_mode: str) -> str:
-    version_payload = _build_version_payload(model.metadata)
+def _build_cii_text(model: ConversionModel, coords_mode: str, version_header_line: str) -> str:
+    version_payload = _build_version_payload(model.metadata, version_header_line)
     elements_payload = _build_elements_payload(model)
     bend_payload = _build_bend_payload(model)
     rigid_payload = _build_rigid_payload(model)
     restraint_payload = _build_restraint_payload(model)
     sif_payload = _build_sif_payload(model)
     reducer_payload = _build_reducer_payload(model)
-    miscel_payload = _build_miscel_payload()
+    miscel_payload = _build_miscel_payload(model.metadata, len(model.edges))
     units_payload = _build_units_payload()
     coords_payload = _build_coords_payload(model, coords_mode)
 
@@ -998,7 +1083,8 @@ def _build_cii_text(model: ConversionModel, coords_mode: str) -> str:
             "0",
             "0",
             str(len(model.nodename_lines)),
-            "1",
+            str(len(model.reducer_edges)),
+            "0",
         ]
     )
     control_line_2 = _row(
@@ -1018,13 +1104,14 @@ def _build_cii_text(model: ConversionModel, coords_mode: str) -> str:
             "0",
             "0",
             str(len(model.sif_edges)),
-            str(len(model.reducer_edges)),
+            "0",
         ]
     )
+    control_line_4 = _row(["0"])
 
     sections: list[tuple[str, list[str]]] = [
         ("VERSION", version_payload),
-        ("CONTROL", [control_line_1, control_line_2, control_line_3]),
+        ("CONTROL", [control_line_1, control_line_2, control_line_3, control_line_4]),
         ("ELEMENTS", elements_payload),
         ("AUX_DATA", []),
         ("NODENAME", model.nodename_lines),
@@ -1040,6 +1127,8 @@ def _build_cii_text(model: ConversionModel, coords_mode: str) -> str:
         ("ALLOWBLS", []),
         ("SIF&TEES", sif_payload),
         ("REDUCERS", reducer_payload),
+        ("FLANGES", []),
+        ("EQUIPMNT", []),
         ("MISCEL_1", miscel_payload),
         ("UNITS", units_payload),
         ("COORDS", coords_payload),
@@ -1058,6 +1147,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, type=Path, help="Input XML file path.")
     parser.add_argument("--output", required=True, type=Path, help="Output CII file path.")
     parser.add_argument(
+        "--template-cii",
+        required=False,
+        type=Path,
+        default=None,
+        help="Optional template CII file used to source the VERSION header first line.",
+    )
+    parser.add_argument(
         "--coords-mode",
         required=False,
         default="first",
@@ -1071,7 +1167,8 @@ def main() -> None:
     args = _parse_args()
     document = _parse_xml_document(args.input)
     model = _build_conversion_model(document)
-    cii_text = _build_cii_text(model, args.coords_mode)
+    version_header_line = _resolve_template_version_line(args.template_cii)
+    cii_text = _build_cii_text(model, args.coords_mode, version_header_line)
 
     args.output.write_text(cii_text, encoding="utf-8")
     print(

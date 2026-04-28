@@ -126,10 +126,19 @@ class NodeCoordinate:
 @dataclass(frozen=True)
 class ReferenceElementOverrides:
     version_payload: list[str]
+    control_payload: list[str]
     nonam_count: int
+    element_block_size: int
+    element_blocks: list[list[str]]
     node_name_pointers: list[int]
     nodename_payload: list[str]
     bend_payload: list[str]
+    displmnt_payload: list[str]
+    allowbls_payload: list[str]
+    flanges_payload: list[str]
+    equipment_payload: list[str]
+    miscel_payload: list[str]
+    units_payload: list[str]
     reducers_payload: list[str]
     coords_payload: list[str]
 
@@ -475,51 +484,146 @@ def _parse_fixed_i13_row(line: str, fields: int) -> list[int]:
     return values
 
 
+def _index_sections(lines: list[str]) -> dict[str, tuple[int, int]]:
+    header_positions: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        if not line.startswith("#$"):
+            continue
+        name = _safe_text(line[2:])
+        if not name:
+            continue
+        header_positions.append((name, index))
+
+    sections: dict[str, tuple[int, int]] = {}
+    for position, (name, header_index) in enumerate(header_positions):
+        next_header_index = (
+            header_positions[position + 1][1] if position + 1 < len(header_positions) else len(lines)
+        )
+        sections[name] = (header_index + 1, next_header_index)
+    return sections
+
+
 def _load_reference_element_overrides(path: Path, expected_elements: int) -> ReferenceElementOverrides:
     lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
-    try:
-        version_index = lines.index("#$ VERSION")
-        control_index = lines.index("#$ CONTROL")
-        elements_index = lines.index("#$ ELEMENTS")
-        aux_index = lines.index("#$ AUX_DATA")
-        nodename_index = lines.index("#$ NODENAME")
-        bend_index = lines.index("#$ BEND")
-        rigid_index = lines.index("#$ RIGID")
-        reducers_index = lines.index("#$ REDUCERS")
-        miscel_index = lines.index("#$ MISCEL_1")
-        coords_index = lines.index("#$ COORDS")
-    except ValueError as exc:
-        raise ValueError(f"Reference CII is missing required section: {exc}") from exc
+    sections = _index_sections(lines)
+    required_sections = [
+        "VERSION",
+        "CONTROL",
+        "ELEMENTS",
+        "AUX_DATA",
+        "BEND",
+        "RIGID",
+        "REDUCERS",
+        "MISCEL_1",
+        "COORDS",
+    ]
+    for section_name in required_sections:
+        if section_name not in sections:
+            raise ValueError(f"Reference CII is missing required section '{section_name}'.")
 
-    version_payload = lines[version_index + 1 : control_index]
-    control_line_1 = _parse_fixed_i13_row(lines[control_index + 1], fields=5)
+    version_start, version_end = sections["VERSION"]
+    control_start, control_end = sections["CONTROL"]
+    elements_start, elements_end = sections["ELEMENTS"]
+    aux_start, _ = sections["AUX_DATA"]
+    bend_start, bend_end = sections["BEND"]
+    rigid_start, _ = sections["RIGID"]
+    reducers_start, reducers_end = sections["REDUCERS"]
+    miscel_start, miscel_end = sections["MISCEL_1"]
+    coords_start, coords_end = sections["COORDS"]
+
+    version_payload = lines[version_start:version_end]
+    control_payload = lines[control_start:control_end]
+    if not control_payload:
+        raise ValueError("Reference CII CONTROL section is empty.")
+    control_line_1 = _parse_fixed_i13_row(control_payload[0], fields=6)
     nonam_count = control_line_1[3]
 
-    element_lines = lines[elements_index + 1 : aux_index]
-    if len(element_lines) % 9 != 0:
-        raise ValueError("Reference CII ELEMENTS section is not a multiple of 9 lines.")
-    reference_elements = len(element_lines) // 9
+    element_lines = lines[elements_start:aux_start - 1]
+    if expected_elements <= 0:
+        raise ValueError("Expected element count must be positive.")
+    if len(element_lines) % expected_elements != 0:
+        raise ValueError(
+            "Reference CII ELEMENTS section size does not divide by expected element count: "
+            f"{len(element_lines)} lines for {expected_elements} elements."
+        )
+    element_block_size = len(element_lines) // expected_elements
+    if element_block_size < 9:
+        raise ValueError(
+            "Reference CII ELEMENTS block size is unsupported; expected at least 9 lines per element."
+        )
+    reference_elements = expected_elements
     if reference_elements != expected_elements:
         raise ValueError(
             f"Reference CII element count mismatch: expected {expected_elements}, got {reference_elements}."
         )
 
+    element_blocks: list[list[str]] = []
+    for element_index in range(reference_elements):
+        start = element_index * element_block_size
+        end = start + element_block_size
+        element_blocks.append(element_lines[start:end])
+
     pointers: list[int] = []
     for element_index in range(reference_elements):
-        row8 = element_lines[element_index * 9 + 7]
-        row8_values = _parse_fixed_i13_row(row8, fields=6)
-        pointers.append(row8_values[5])
+        block = element_blocks[element_index]
+        if element_block_size == 9:
+            row_values = _parse_fixed_i13_row(block[7], fields=6)
+            pointers.append(row_values[5])
+        elif element_block_size >= 12:
+            row_values = _parse_fixed_i13_row(block[10], fields=6)
+            pointers.append(row_values[5])
+        else:
+            pointers.append(0)
 
-    nodename_payload = lines[nodename_index + 1 : bend_index]
-    bend_payload = lines[bend_index + 1 : rigid_index]
-    reducers_payload = lines[reducers_index + 1 : miscel_index]
-    coords_payload = lines[coords_index + 1 :]
+    nodename_payload = []
+    if "NODENAME" in sections:
+        nodename_start, nodename_end = sections["NODENAME"]
+        nodename_payload = lines[nodename_start:nodename_end]
+
+    displmnt_payload = []
+    if "DISPLMNT" in sections:
+        displmnt_start, displmnt_end = sections["DISPLMNT"]
+        displmnt_payload = lines[displmnt_start:displmnt_end]
+
+    allowbls_payload = []
+    if "ALLOWBLS" in sections:
+        allowbls_start, allowbls_end = sections["ALLOWBLS"]
+        allowbls_payload = lines[allowbls_start:allowbls_end]
+
+    flanges_payload = []
+    if "FLANGES" in sections:
+        flanges_start, flanges_end = sections["FLANGES"]
+        flanges_payload = lines[flanges_start:flanges_end]
+
+    equipment_payload = []
+    if "EQUIPMNT" in sections:
+        equip_start, equip_end = sections["EQUIPMNT"]
+        equipment_payload = lines[equip_start:equip_end]
+
+    units_payload = []
+    if "UNITS" in sections:
+        units_start, units_end = sections["UNITS"]
+        units_payload = lines[units_start:units_end]
+
+    bend_payload = lines[bend_start:rigid_start - 1]
+    reducers_payload = lines[reducers_start:miscel_start - 1]
+    miscel_payload = lines[miscel_start:miscel_end]
+    coords_payload = lines[coords_start:coords_end]
     return ReferenceElementOverrides(
         version_payload=version_payload,
+        control_payload=control_payload,
         nonam_count=nonam_count,
+        element_block_size=element_block_size,
+        element_blocks=element_blocks,
         node_name_pointers=pointers,
         nodename_payload=nodename_payload,
         bend_payload=bend_payload,
+        displmnt_payload=displmnt_payload,
+        allowbls_payload=allowbls_payload,
+        flanges_payload=flanges_payload,
+        equipment_payload=equipment_payload,
+        miscel_payload=miscel_payload,
+        units_payload=units_payload,
         reducers_payload=reducers_payload,
         coords_payload=coords_payload,
     )
@@ -580,6 +684,108 @@ def _infer_reducer_indices(
         edge_to_reducer_index[index] = len(reducers)
 
     return edge_to_reducer_index, reducers
+
+
+def _build_elements_payload(
+    elements: list[ElementResolved],
+    edge_to_bend_index: dict[int, int],
+    edge_to_rigid_index: dict[int, int],
+    edge_to_restraint_index: dict[int, int],
+    edge_to_sif_index: dict[int, int],
+    edge_to_reducer_index: dict[int, int],
+    reference_overrides: ReferenceElementOverrides | None,
+) -> list[str]:
+    lines: list[str] = []
+    zero_row6 = _row(
+        [
+            _format_fixed_float(0.0, 6),
+            _format_fixed_float(0.0, 6),
+            _format_fixed_float(0.0, 6),
+            _format_fixed_float(0.0, 6),
+            _format_fixed_float(0.0, 6),
+            _format_fixed_float(0.0, 6),
+        ]
+    )
+    for edge_index, element in enumerate(elements):
+        line1 = _row(
+            [
+                _format_auto_float(element.from_node),
+                _format_auto_float(element.to_node),
+                _format_auto_float(element.delta_x),
+                _format_auto_float(element.delta_y),
+                _format_auto_float(element.delta_z),
+                _format_auto_float(element.diameter),
+            ]
+        )
+        line2 = _row(
+            [
+                _format_auto_float(element.wall_thickness),
+                _format_auto_float(element.insulation_thickness),
+                _format_auto_float(element.corrosion_allowance),
+                _format_auto_float(element.temperature1),
+                _format_auto_float(element.temperature2),
+                _format_auto_float(element.temperature3),
+            ]
+        )
+
+        # Default compact (9-row) element block.
+        element_lines = [
+            line1,
+            line2,
+            zero_row6,
+            zero_row6,
+            zero_row6,
+            zero_row6,
+            _row(
+                [
+                    str(edge_to_bend_index.get(edge_index, 0)),
+                    str(edge_to_rigid_index.get(edge_index, 0)),
+                    "0",
+                    str(edge_to_restraint_index.get(edge_index, 0)),
+                    "0",
+                    "0",
+                ]
+            ),
+            _row(
+                [
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    str(edge_to_sif_index.get(edge_index, 0)),
+                    str(
+                        reference_overrides.node_name_pointers[edge_index]
+                        if reference_overrides is not None and edge_index < len(reference_overrides.node_name_pointers)
+                        else 0
+                    ),
+                ]
+            ),
+            _row([str(edge_to_reducer_index.get(edge_index, 0))]),
+        ]
+
+        # If reference carries legacy extended element blocks (e.g., 12 rows),
+        # preserve unknown rows and only replace rows that this converter owns.
+        if reference_overrides is not None and reference_overrides.element_block_size >= 9:
+            block_size = reference_overrides.element_block_size
+            if edge_index < len(reference_overrides.element_blocks):
+                template_block = list(reference_overrides.element_blocks[edge_index])
+                if len(template_block) == block_size:
+                    template_block[0] = line1
+                    template_block[1] = line2
+                    if block_size == 9:
+                        template_block[6] = element_lines[6]
+                        template_block[7] = element_lines[7]
+                        template_block[8] = element_lines[8]
+                    elif block_size >= 12:
+                        # Extended legacy format: keep template-owned rows 3..12 to
+                        # avoid manufacturing semantics not present in Input XML.
+                        pass
+                    lines.extend(template_block)
+                    continue
+
+        lines.extend(element_lines)
+
+    return lines
 
 
 def _build_cii_text(
@@ -752,65 +958,15 @@ def _build_cii_text(
             for _ in range(9):
                 sif_payload.append(zero_row)
 
-    elements_payload: list[str] = []
-    zero_row6 = _row(
-        [
-            _format_fixed_float(0.0, 6),
-            _format_fixed_float(0.0, 6),
-            _format_fixed_float(0.0, 6),
-            _format_fixed_float(0.0, 6),
-            _format_fixed_float(0.0, 6),
-            _format_fixed_float(0.0, 6),
-        ]
+    elements_payload = _build_elements_payload(
+        elements=elements,
+        edge_to_bend_index=edge_to_bend_index,
+        edge_to_rigid_index=edge_to_rigid_index,
+        edge_to_restraint_index=edge_to_restraint_index,
+        edge_to_sif_index=edge_to_sif_index,
+        edge_to_reducer_index=edge_to_reducer_index,
+        reference_overrides=reference_overrides,
     )
-
-    for edge_index, element in enumerate(elements):
-        node_name_pointer = 0
-        if reference_overrides is not None:
-            node_name_pointer = reference_overrides.node_name_pointers[edge_index]
-
-        line1 = _row(
-            [
-                _format_auto_float(element.from_node),
-                _format_auto_float(element.to_node),
-                _format_auto_float(element.delta_x),
-                _format_auto_float(element.delta_y),
-                _format_auto_float(element.delta_z),
-                _format_auto_float(element.diameter),
-            ]
-        )
-        line2 = _row(
-            [
-                _format_auto_float(element.wall_thickness),
-                _format_auto_float(element.insulation_thickness),
-                _format_auto_float(element.corrosion_allowance),
-                _format_auto_float(element.temperature1),
-                _format_auto_float(element.temperature2),
-                _format_auto_float(element.temperature3),
-            ]
-        )
-        line7 = _row(
-            [
-                str(edge_to_bend_index.get(edge_index, 0)),
-                str(edge_to_rigid_index.get(edge_index, 0)),
-                "0",
-                str(edge_to_restraint_index.get(edge_index, 0)),
-                "0",
-                "0",
-            ]
-        )
-        line8 = _row(
-            [
-                "0",
-                "0",
-                "0",
-                "0",
-                str(edge_to_sif_index.get(edge_index, 0)),
-                str(node_name_pointer),
-            ]
-        )
-        line9 = _row([str(edge_to_reducer_index.get(edge_index, 0))])
-        elements_payload.extend([line1, line2, zero_row6, zero_row6, zero_row6, zero_row6, line7, line8, line9])
 
     reducer_payload = [
         _row(
@@ -881,18 +1037,32 @@ def _build_cii_text(
 
     nonam_count = 0
     nodename_payload: list[str] = []
+    control_payload: list[str] = []
+    displmnt_payload: list[str] = []
+    allowbls_payload: list[str] = []
+    flanges_payload: list[str] = []
+    equipment_payload: list[str] = []
     if reference_overrides is not None:
         version_payload = reference_overrides.version_payload
+        control_payload = reference_overrides.control_payload
         nonam_count = reference_overrides.nonam_count
         nodename_payload = reference_overrides.nodename_payload
         bend_payload = reference_overrides.bend_payload
+        displmnt_payload = reference_overrides.displmnt_payload
+        allowbls_payload = reference_overrides.allowbls_payload
+        flanges_payload = reference_overrides.flanges_payload
+        equipment_payload = reference_overrides.equipment_payload
+        if reference_overrides.miscel_payload:
+            miscel_payload = reference_overrides.miscel_payload
+        if reference_overrides.units_payload:
+            units_payload = reference_overrides.units_payload
         reducer_payload = reference_overrides.reducers_payload
         coords_payload = reference_overrides.coords_payload
 
-    control_line_1 = _row([str(len(elements)), "0", "0", str(nonam_count), "1"])
+    control_line_1 = _row([str(len(elements)), "0", "0", str(nonam_count), "1", "0"])
     control_line_2 = _row(
         [
-            str(len(bend_payload) // 2),
+            str(len(edge_to_bend_index)),
             str(len(rigid_payload)),
             "0",
             str(len(restraint_payload) // 8),
@@ -901,10 +1071,14 @@ def _build_cii_text(
         ]
     )
     control_line_3 = _row(["0", "0", "0", "0", str(len(sif_payload) // 10), str(len(reducer_payload))])
+    control_line_4 = _row(["0"])
+    computed_control_payload = [control_line_1, control_line_2, control_line_3, control_line_4]
+    if control_payload:
+        computed_control_payload = control_payload
 
     sections: list[tuple[str, list[str]]] = [
         ("VERSION", version_payload),
-        ("CONTROL", [control_line_1, control_line_2, control_line_3]),
+        ("CONTROL", computed_control_payload),
         ("ELEMENTS", elements_payload),
         ("AUX_DATA", []),
         ("NODENAME", nodename_payload),
@@ -912,14 +1086,16 @@ def _build_cii_text(
         ("RIGID", rigid_payload),
         ("EXPJT", []),
         ("RESTRANT", restraint_payload),
-        ("DISPLMNT", []),
+        ("DISPLMNT", displmnt_payload),
         ("FORCMNT", []),
         ("UNIFORM", []),
         ("WIND", []),
         ("OFFSETS", []),
-        ("ALLOWBLS", []),
+        ("ALLOWBLS", allowbls_payload),
         ("SIF&TEES", sif_payload),
         ("REDUCERS", reducer_payload),
+        ("FLANGES", flanges_payload),
+        ("EQUIPMNT", equipment_payload),
         ("MISCEL_1", miscel_payload),
         ("UNITS", units_payload),
         ("COORDS", coords_payload),
@@ -932,11 +1108,11 @@ def _build_cii_text(
 
     stats = {
         "elements": len(elements),
-        "bends": len(bend_payload) // 2,
+        "bends": len(edge_to_bend_index),
         "rigids": len(rigid_payload),
         "restraints": len(restraint_payload) // 8,
         "sifs": len(sif_payload) // 10,
-        "reducers": len(reducer_payload),
+        "reducers": len(edge_to_reducer_index),
         "coords": len(coords_payload) - 1,
     }
     return "\n".join(lines) + "\n", stats
@@ -951,8 +1127,10 @@ def _build_parser() -> argparse.ArgumentParser:
         required=False,
         type=Path,
         help=(
-            "Optional reference CII. When provided, NodeName pointers are copied into ELEMENTS "
-            "row8/col6, NONAM count is aligned, and NODENAME payload is reused."
+            "Optional reference CII. When provided, parser accepts legacy headers with trailing "
+            "spaces, aligns control/nonam metadata, reuses legacy section payloads (NODENAME, "
+            "DISPLMNT, ALLOWBLS, FLANGES, EQUIPMNT, MISCEL_1, UNITS, COORDS), and preserves "
+            "reference ELEMENTS block style (9/12+ lines per element)."
         ),
     )
     parser.add_argument("--default-diameter", required=False, type=float, default=0.0, help="Fallback diameter.")
