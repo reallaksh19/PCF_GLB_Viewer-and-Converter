@@ -132,7 +132,8 @@ function _bindShortcuts(container) {
 // ── HTML scaffold ───────────────────────────────────────────────────────────
 
 function _buildHTML(caps) {
-  const isStaticMode = !caps?.rawRvmImport;
+  // Always render the Load RVM button. If the local backend is dead, clicking it will trigger the GitHub PAT prompt.
+  const isStaticMode = false;
   return `
 <div class="geo-tab geo-theme-navisdark rvm-tab-root">
   <div class="geo-top-ribbon" id="rvm-top-ribbon">
