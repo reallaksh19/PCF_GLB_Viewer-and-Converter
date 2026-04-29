@@ -1,5 +1,3 @@
-const fs = require('fs');
-
 /**
  * Parses PDMS/AVEVA RMSS_ATTRIBUTE.TXT files.
  * Segregates items as children based on OWNER (Parent) and includes specific attributes.
@@ -111,10 +109,12 @@ function parseRmssAttributes(content) {
   return Array.from(branchMap.values()).filter(b => b.children.length > 0);
 }
 
-module.exports = { parseRmssAttributes };
+// Ensure we export it properly for both ES modules and CommonJS
+export { parseRmssAttributes };
 
-// Simple CLI usage
-if (require.main === module) {
+// Simple CLI usage (only if run natively in node without ES module system)
+if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
+  const fs = require('fs');
   const args = process.argv.slice(2);
   if (args.length < 1) {
     console.error("Usage: node rmss-attribute-parser.js <path_to_RMSS_ATTRIBUTE.TXT>");

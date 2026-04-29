@@ -295,6 +295,9 @@ export class RvmViewer3D {
             case 'BACK': this.camera.position.set(center.x, center.y, center.z - dist); break;
             case 'LEFT': this.camera.position.set(center.x - dist, center.y, center.z); break;
             case 'RIGHT': this.camera.position.set(center.x + dist, center.y, center.z); break;
+            case 'ISO_NW': this.camera.position.set(center.x - dist, center.y + dist, center.z - dist); break;
+            case 'ISO_NE': this.camera.position.set(center.x + dist, center.y + dist, center.z - dist); break;
+            case 'ISO_SW': this.camera.position.set(center.x - dist, center.y + dist, center.z + dist); break;
             case 'ISO_SE': this.camera.position.set(center.x + dist, center.y + dist, center.z + dist); break;
         }
 
