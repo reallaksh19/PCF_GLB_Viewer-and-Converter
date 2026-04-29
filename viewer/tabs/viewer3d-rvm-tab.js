@@ -4,6 +4,7 @@ import { on, off, emit } from '../core/event-bus.js';
 import { detectRvmCapabilities } from '../rvm/RvmCapabilities.js';
 import { notify } from '../diagnostics/notification-center.js';
 import { RvmViewer3D } from '../rvm-viewer/RvmViewer3D.js';
+import { parseRmssAttributes } from '../converters/rmss-attribute-parser.js';
 
 let _viewer = null;
 let _shortcutHandler = null;
@@ -16,9 +17,18 @@ const ACTION_LABELS = {
   NAV_ORBIT: 'Orbit',
   NAV_PAN: 'Pan',
   NAV_SELECT: 'Select',
+  MEASURE_TOOL: 'Measure',
+  VIEW_MARQUEE_ZOOM: 'Zoom',
+  NAV_PLAN_X: 'PlanX',
+  NAV_ROTATE_Y: 'RotY',
+  NAV_ROTATE_Z: 'RotZ',
   VIEW_FIT_ALL: 'Reset',
   VIEW_FIT_SELECTION: 'FitSel',
   VIEW_TOGGLE_PROJECTION: 'Proj',
+  SNAP_ISO_NW: 'NW',
+  SNAP_ISO_NE: 'NE',
+  SNAP_ISO_SW: 'SW',
+  SNAP_ISO_SE: 'SE',
   SECTION_BOX: 'SecBox',
   SECTION_PLANE_UP: 'SecUp',
   SECTION_DISABLE: 'SecOff',
@@ -34,6 +44,15 @@ const ACTION_ICONS = {
   SECTION_BOX: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
   SECTION_PLANE_UP: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
   SECTION_DISABLE: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
+  MEASURE_TOOL: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="8" rx="2" ry="2"/><path d="M6 8v4"/><path d="M10 8v4"/><path d="M14 8v4"/><path d="M18 8v4"/></svg>',
+  VIEW_MARQUEE_ZOOM: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="12" height="12" rx="1" stroke-dasharray="3 2"/><circle cx="17" cy="17" r="3"/><path d="m21 21-2.15-2.15"/></svg>',
+  NAV_PLAN_X: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+  NAV_ROTATE_Y: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>',
+  NAV_ROTATE_Z: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+  SNAP_ISO_NW: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="M7 7h4"/><path d="M7 11v-4"/></svg>',
+  SNAP_ISO_NE: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="M17 7h-4"/><path d="M17 11v-4"/></svg>',
+  SNAP_ISO_SW: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="M7 17h4"/><path d="M7 13v4"/></svg>',
+  SNAP_ISO_SE: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="M17 17h-4"/><path d="M17 13v4"/></svg>',
 };
 
 const UPLOAD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><rect x="4" y="16" width="16" height="4" rx="1.5"/></svg>';
@@ -83,6 +102,28 @@ function _renderCapabilityBanner(container, caps) {
 // ── Bundle file loader ──────────────────────────────────────────────────────
 
 function _bindBundleLoader(container) {
+  const attrInput = container.querySelector('#rvm-attr-file-input');
+  if (attrInput) {
+    attrInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+          const text = await file.text();
+          const hierarchyJson = parseRmssAttributes(text);
+
+          emit(RuntimeEvents.FILE_LOADED, {
+              name: file.name + '.json',
+              source: 'rvm-tab',
+              payload: hierarchyJson,
+              kind: 'aveva-json'
+          });
+          notify({ type: 'info', message: `Converted RMSS Attributes to JSON hierarchy` });
+      } catch (err) {
+          notify({ type: 'error', message: `Failed to parse Attributes file: ${err.message}` });
+      }
+    });
+  }
+
   const input = container.querySelector('#rvm-bundle-file-input');
   if (!input) return;
   input.addEventListener('change', async (e) => {
@@ -167,6 +208,10 @@ function _buildHTML(caps) {
         <input type="file" id="rvm-raw-file-input" accept=".rvm" style="display:none">
       </label>
       `}
+      <label class="rvm-btn rvm-btn-file rvm-btn-assisted" title="Convert RMSS Attributes file to JSON hierarchy">
+        ${UPLOAD_ICON}<span>Att Txt -> Json</span>
+        <input type="file" id="rvm-attr-file-input" accept=".txt" style="display:none">
+      </label>
     </div>
     <div class="rvm-ribbon-section rvm-ribbon-nav">
       ${Object.entries(ACTION_ICONS).map(([id, icon]) => `
@@ -214,6 +259,13 @@ function _bindToolbarActions(container) {
       case 'NAV_ORBIT':   _viewer?.setNavMode?.('orbit'); break;
       case 'NAV_PAN':     _viewer?.setNavMode?.('pan'); break;
       case 'NAV_SELECT':  _viewer?.setNavMode?.('select'); break;
+      case 'NAV_PLAN_X':  _viewer?.snapToPreset?.('TOP'); break;
+      case 'NAV_ROTATE_Y': _viewer?.snapToPreset?.('FRONT'); break;
+      case 'NAV_ROTATE_Z': _viewer?.snapToPreset?.('RIGHT'); break;
+      case 'SNAP_ISO_NW': _viewer?.snapToPreset?.('ISO_NW'); break;
+      case 'SNAP_ISO_NE': _viewer?.snapToPreset?.('ISO_NE'); break;
+      case 'SNAP_ISO_SW': _viewer?.snapToPreset?.('ISO_SW'); break;
+      case 'SNAP_ISO_SE': _viewer?.snapToPreset?.('ISO_SE'); break;
       case 'VIEW_FIT_ALL': _viewer?.fitAll?.(); break;
       case 'VIEW_FIT_SELECTION': _viewer?.fitSelection?.(); break;
       case 'VIEW_TOGGLE_PROJECTION': _viewer?.toggleProjection?.(); break;
