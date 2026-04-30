@@ -89,10 +89,16 @@ export class RvmViewer3D {
             if (this.hoveredObject !== object) {
                 if (this._clearHover) this._clearHover();
                 this.hoveredObject = object;
-                if (object.material && object.material.color) {
-                    this.hoverOriginalColor = object.material.color.getHex();
-                    // Lighten the color
-                    object.material.color.setHex(0xffffff);
+                if (object.material) {
+                    // Clone the material to avoid shared material issues
+                    this.hoverOriginalMaterial = object.material;
+                    object.material = object.material.clone();
+                    if (object.material.emissive) {
+                        object.material.emissive.setHex(0x333333);
+                    } else if (object.material.color) {
+                         // Lighten color slightly
+                         object.material.color.lerp(new THREE.Color(0xffffff), 0.3);
+                    }
                 }
             }
         } else {
@@ -101,13 +107,15 @@ export class RvmViewer3D {
     };
 
     this._clearHover = () => {
-        if (this.hoveredObject && this.hoverOriginalColor !== null) {
-            if (this.hoveredObject.material && this.hoveredObject.material.color) {
-                this.hoveredObject.material.color.setHex(this.hoverOriginalColor);
+        if (this.hoveredObject && this.hoverOriginalMaterial) {
+            // Restore original material and dispose the cloned one
+            if (this.hoveredObject.material && this.hoveredObject.material !== this.hoverOriginalMaterial) {
+                 this.hoveredObject.material.dispose();
             }
+            this.hoveredObject.material = this.hoverOriginalMaterial;
         }
         this.hoveredObject = null;
-        this.hoverOriginalColor = null;
+        this.hoverOriginalMaterial = null;
     };
         this.container.addEventListener('pointermove', this.hoverMoveHandler);
 
