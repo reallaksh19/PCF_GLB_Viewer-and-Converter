@@ -372,6 +372,40 @@ function _bindToolbarActions(container) {
           });
       });
   }
+
+  const renderTags = () => {
+      const tagList = container.querySelector('#rvm-tag-list');
+      if (!tagList) return;
+      tagList.innerHTML = '';
+      if (_viewer && _viewer.tagStore) {
+          const tags = _viewer.tagStore.getAllTags();
+          tags.forEach(t => {
+              const d = document.createElement('div');
+              d.className = `rvm-tag-item severity-${t.severity || 'low'}`;
+              d.innerHTML = `
+                  <div class="rvm-tag-text">${t.text || t.id}</div>
+                  <div class="rvm-tag-actions">
+                      <button class="rvm-tag-jump" data-id="${t.id}">Go</button>
+                      <button class="rvm-tag-delete" data-id="${t.id}">X</button>
+                  </div>
+              `;
+              tagList.appendChild(d);
+          });
+
+          tagList.querySelectorAll('.rvm-tag-jump').forEach(b => b.addEventListener('click', (e) => {
+              _viewer.jumpToTag(e.target.dataset.id);
+          }));
+          tagList.querySelectorAll('.rvm-tag-delete').forEach(b => b.addEventListener('click', (e) => {
+              _viewer.tagStore.deleteTag(e.target.dataset.id);
+          }));
+      }
+  };
+
+  on(RuntimeEvents.RVM_TAG_CREATED, renderTags);
+  on(RuntimeEvents.RVM_TAG_DELETED, renderTags);
+
+  // Try render if store already exists
+  setTimeout(renderTags, 500);
 }
 
 // ── ResizeObserver ──────────────────────────────────────────────────────────
