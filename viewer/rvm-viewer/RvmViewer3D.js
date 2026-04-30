@@ -333,9 +333,27 @@ export class RvmViewer3D {
         this.controls.update();
     }
 
+
     setSectionMode(mode) {
+        if (mode === 'BOX' && this.selection.getSelectionRenderIds().length > 0) {
+            const box = new THREE.Box3();
+            let hasObj = false;
+            const rIds = new Set(this.selection.getSelectionRenderIds());
+            this.modelGroup.traverse(obj => {
+                if (obj.isMesh && rIds.has(obj.name || obj.uuid)) {
+                    box.expandByObject(obj);
+                    hasObj = true;
+                }
+            });
+            if (hasObj) {
+                 this.sectioning.buildBoxSection(this.modelGroup, box);
+                 this.sectioning._sectionMode = 'BOX';
+                 return;
+            }
+        }
         this.sectioning.setSectionMode(mode);
     }
+
 
     disableSection() {
         this.sectioning.disableSection();
@@ -470,10 +488,10 @@ _onCanvasClick(event) {
                 if (validIntersects.length > 0) {
                     const obj = validIntersects[0].object;
                     if (obj.name) {
-                        this.selection.selectByRenderIds([obj.name]);
+                        this.selection._handlePick(obj.name);
                     }
                 } else {
-                    this.selection.clear();
+                    this.selection.clearSelection();
                 }
             }
             return;
@@ -772,7 +790,7 @@ getNavMode() {
     removeTag(tagId) {
         const obj = this.scene.getObjectByName(`TAG_${tagId}`);
         if (obj) {
-            this.scene.remove(obj);
+            this.scene.remove(obj); if(obj.geometry) obj.geometry.dispose(); if(obj.material) obj.material.dispose();
         }
     }
 

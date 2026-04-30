@@ -62,7 +62,7 @@ export class RvmSelectionAdapter {
         let canonicalId = null;
         if (this.identityMap) {
             // Reverse lookup needed if identity map provides canonical -> renderIds
-            canonicalId = this.identityMap.getCanonicalIdByRenderId?.(renderId);
+            canonicalId = this.identityMap.canonicalFromRender?.(renderId);
             // Assuming fallback if canonical ID not found
         }
         canonicalId = canonicalId || renderId; // fallback
@@ -83,7 +83,7 @@ export class RvmSelectionAdapter {
 
 
         if (this.identityMap) {
-            this._selectedRenderIds = this.identityMap.getRenderIdsByCanonicalId(canonicalId) || [canonicalId];
+            this._selectedRenderIds = this.identityMap.renderIdsFromCanonical(canonicalId) || [canonicalId];
         } else {
             this._selectedRenderIds = [canonicalId];
         }
@@ -96,7 +96,7 @@ export class RvmSelectionAdapter {
         // but for now, color the search results.
         const renderIds = [];
         for (const cId of canonicalIds) {
-            const rIds = this.identityMap?.getRenderIdsByCanonicalId(cId) || [cId];
+            const rIds = this.identityMap?.renderIdsFromCanonical(cId) || [cId];
             renderIds.push(...rIds);
         }
         this._highlight(renderIds, COLORS.SEARCH_RESULT);

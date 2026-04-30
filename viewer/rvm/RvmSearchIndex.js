@@ -46,7 +46,7 @@ export class RvmSearchIndex {
                     // Pre-resolve render IDs
                     let renderObjectIds = [node.canonicalObjectId];
                     if (this.identityMap) {
-                        renderObjectIds = this.identityMap.getRenderIdsByCanonicalId?.(node.canonicalObjectId) || [node.canonicalObjectId];
+                        renderObjectIds = this.identityMap.renderIdsFromCanonical?.(node.canonicalObjectId) || [node.canonicalObjectId];
                     }
 
                     this._searchableEntries.push({

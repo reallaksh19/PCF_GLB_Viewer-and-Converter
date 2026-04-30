@@ -8,7 +8,7 @@ import { RvmSearchIndex } from '../rvm/RvmSearchIndex.js';
 import { parseRmssAttributes } from '../converters/rmss-attribute-parser.js';
 import { downloadText } from '../pcfx/Pcfx_FileIO.js';
 
-let _viewer = null;
+let _viewer.treeModel = null; _viewer = null;
 let _shortcutHandler = null;
 let _resizeObserver = null;
 let _capabilitiesListenerOff = null;
@@ -78,7 +78,7 @@ function _disposeRvmViewer() {
   }
   if (_viewer) {
     _viewer.dispose();
-    _viewer = null;
+    _viewer.treeModel = null; _viewer = null;
   }
   if (_resizeObserver) {
     _resizeObserver.disconnect();
@@ -195,7 +195,7 @@ function _bindSearch(container) {
             const items = list.querySelectorAll('li');
             items.forEach(li => {
                 li.addEventListener('click', () => {
-                   _viewer.selectByCanonicalId(li.dataset.id);
+                   _viewer.selectByCanonicalId(li.dataset.id); _viewer.fitSelection();
                 });
             });
          }
@@ -360,7 +360,7 @@ function _bindResize(container) {
 
 function _bindTabListener() {
   const tabChangedCallback = ({ tabId }) => {
-    if (tabId !== 'viewer3d-rvm') _disposeRvmViewer();
+    if (tabId !== 'viewer3d-rvm') { const root = document.querySelector('.rvm-tab-root'); if (root) root.style.display = 'none'; } else { const root = document.querySelector('.rvm-tab-root'); if (root) root.style.display = ''; }
   };
   const modelLoadedCallback = (payload) => {
     if (_viewer && payload && payload.gltf && payload.gltf.scene) {
@@ -372,22 +372,28 @@ function _bindTabListener() {
             _viewer.searchIndex.build();
         }
 
+
         const container = document.querySelector('.rvm-tab-root');
         if (container && payload.indexJson && payload.indexJson.nodes) {
             const tree = container.querySelector('#rvm-hierarchy-tree');
             if (tree) {
-                // simple render
-                tree.innerHTML = payload.indexJson.nodes.slice(0, 100).map(n => `<li style="cursor:pointer;" data-id="${n.canonicalObjectId}">${n.name || n.canonicalObjectId}</li>`).join('') + (payload.indexJson.nodes.length > 100 ? '<li>...</li>' : '');
-                tree.querySelectorAll('li[data-id]').forEach(li => {
-                    li.addEventListener('click', () => {
-                        _viewer.selectByCanonicalId(li.dataset.id);
+                if (!_viewer.treeModel) {
+                    import('../rvm/RvmTreeModel.js').then(module => {
+                        _viewer.treeModel = new module.RvmTreeModel(payload.indexJson, { viewer: _viewer });
+                        _viewer.treeModel.build();
+                        _viewer.treeModel.renderTree(tree);
                     });
-                });
+                } else {
+                    _viewer.treeModel.renderTree(tree);
+                }
             }
         }
+
         if (container) {
             const exportBtn = container.querySelector('#rvm-export-tags-btn');
             if (exportBtn) exportBtn.disabled = false;
+            const addBtn = container.querySelector('#rvm-add-tag-btn');
+            if (addBtn) addBtn.disabled = false;
 
             // Initial render of tags if any were loaded with bundle
             _renderTagList(container);
@@ -570,6 +576,35 @@ function _bindTags(container) {
         notify({ type: 'error', message: `Failed to import tags: ${err.message}` });
       }
       importInput.value = ''; // reset
+    });
+  }
+
+  const addBtn = container.querySelector('#rvm-add-tag-btn');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      if (!_viewer || !_viewer.tagStore) return;
+      const selection = _viewer.getSelection();
+      if (!selection.canonicalObjectId) {
+         notify({ type: 'warning', message: 'Select an object first to attach a tag.' });
+         return;
+      }
+
+      const text = prompt('Enter tag description:');
+      if (!text) return;
+
+      const sev = prompt('Enter severity (high, medium, low, info):', 'info');
+
+      // Create tag using current camera state and selection
+      const view = _viewer.getSavedView();
+      const tag = _viewer.tagStore.createTag(selection.canonicalObjectId, {
+         text: text,
+         severity: sev || 'info',
+         cameraState: view.camera,
+         worldPosition: view.camera.target
+      });
+
+      _viewer.addTag(tag);
+      notify({ type: 'success', message: 'Tag created successfully.' });
     });
   }
 }

@@ -36,8 +36,8 @@ async function runTests() {
 
     // Mock Data
     const mockIdentityMap = {
-        getRenderIdsByCanonicalId: (id) => [id + '_render'],
-        getCanonicalIdByRenderId: (id) => id.replace('_render', '')
+        renderIdsFromCanonical: (id) => [id + '_render'],
+        canonicalFromRender: (id) => id.replace('_render', '')
     };
 
     const mockRvmIndex = {

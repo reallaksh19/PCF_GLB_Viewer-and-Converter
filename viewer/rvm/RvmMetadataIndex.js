@@ -16,7 +16,7 @@ export class RvmMetadataIndex {
     // Resolves a renderObjectId (e.g. from mesh pick) to its canonical object ID
     resolveRenderIdToCanonicalId(renderObjectId) {
         if (!this.identityMap) return renderObjectId; // Fallback
-        return this.identityMap.getCanonicalIdByRenderId?.(renderObjectId) || renderObjectId;
+        return this.identityMap.canonicalFromRender?.(renderObjectId) || renderObjectId;
     }
 
     // Returns node record from RvmIndex for a given canonical ID
@@ -32,9 +32,9 @@ export class RvmMetadataIndex {
     }
 
     // Resolves canonicalObjectId to renderObjectIds for scene selection
-    getRenderIdsByCanonicalId(canonicalObjectId) {
+    renderIdsFromCanonical(canonicalObjectId) {
         if (!this.identityMap) return [canonicalObjectId];
-        return this.identityMap.getRenderIdsByCanonicalId?.(canonicalObjectId) || [canonicalObjectId];
+        return this.identityMap.renderIdsFromCanonical?.(canonicalObjectId) || [canonicalObjectId];
     }
 
     // Renders key/value table into el
