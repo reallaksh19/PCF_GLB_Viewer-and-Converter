@@ -78,11 +78,11 @@ export class RvmVisibilityController {
 
         if (this.identityMap) {
             for (const cId of this._hiddenCanonicalIds) {
-                const renderIds = this.identityMap.getRenderIdsByCanonicalId(cId) || [];
+                const renderIds = this.identityMap.renderIdsFromCanonical(cId) || [];
                 renderIds.forEach(r => hideRenderIds.add(r));
             }
             for (const cId of this._isolatedCanonicalIds) {
-                const renderIds = this.identityMap.getRenderIdsByCanonicalId(cId) || [];
+                const renderIds = this.identityMap.renderIdsFromCanonical(cId) || [];
                 renderIds.forEach(r => isolateRenderIds.add(r));
             }
         } else {

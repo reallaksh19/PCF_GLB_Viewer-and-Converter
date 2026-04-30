@@ -48,21 +48,20 @@ export class RvmSectioning {
         return { mode: this._sectionMode, padding: this._padding, offset: this._offset };
     }
 
-    buildBoxSection(modelGroup) {
+
+    buildBoxSection(modelGroup, selectionBounds) {
         if (!modelGroup) return;
-        const box = new THREE.Box3().setFromObject(modelGroup);
+        const box = selectionBounds ? selectionBounds.clone() : new THREE.Box3().setFromObject(modelGroup);
         if (box.isEmpty()) return;
 
-        box.expandByScalar(-this._padding); // shrink box by padding
-        this._sectionBounds = box.clone();
+        box.expandByScalar(this._padding); // user padding around selection
 
-
-        box.expandByScalar(-this._padding); // shrink box by padding
         this._sectionBounds = box.clone();
 
         this._applyBoxPlanes(box);
         this._renderSectionBoxVisual(box);
     }
+
 
     buildPlaneUpSection(modelGroup) {
         if (!modelGroup) return;
