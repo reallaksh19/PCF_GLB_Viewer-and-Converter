@@ -38,6 +38,11 @@ const DEFAULT_PCFX_DEFAULTS = {
   supportGap: 'empty',
 };
 
+const DEFAULT_RVM_ROUTING = {
+  topologyMethod: 'topology_legacy',
+  routeThroughInstEnabled: false,
+};
+
 function _clone(v) {
   return JSON.parse(JSON.stringify(v));
 }
@@ -226,6 +231,7 @@ export const state = {
     savedViews: [],
     diagnostics: [],
     asyncLoad: { loadId: null, status: 'idle', phase: null, progress: 0, error: null },
+    routing: { ...DEFAULT_RVM_ROUTING },
   },
 };
 
@@ -282,6 +288,14 @@ export function loadStickyState() {
         if (parsedRvm.deploymentMode) state.rvm.deploymentMode = parsedRvm.deploymentMode;
         if (Array.isArray(parsedRvm.savedViews)) state.rvm.savedViews = parsedRvm.savedViews;
         if (Array.isArray(parsedRvm.tags)) state.rvm.tags = parsedRvm.tags;
+        if (parsedRvm.routing && typeof parsedRvm.routing === 'object') {
+          state.rvm.routing = {
+            ...DEFAULT_RVM_ROUTING,
+            ...parsedRvm.routing,
+          };
+        } else {
+          state.rvm.routing = { ...DEFAULT_RVM_ROUTING };
+        }
       }
     }
   } catch (e) {
@@ -299,6 +313,7 @@ export function saveStickyState() {
       deploymentMode: state.rvm.deploymentMode,
       savedViews: state.rvm.savedViews,
       tags: state.rvm.tags,
+      routing: state.rvm.routing,
     };
     localStorage.setItem('viewer3d_rvm_v1', JSON.stringify(rvmPersist));
   } catch (e) {

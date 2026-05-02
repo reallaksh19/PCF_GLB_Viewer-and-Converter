@@ -1,17 +1,21 @@
-import { RuntimeEvents } from '../contracts/runtime-events.js';
+﻿import { RuntimeEvents } from '../contracts/runtime-events.js';
 import { state, saveStickyState } from '../core/state.js';
 import { on, off, emit } from '../core/event-bus.js';
 import { detectRvmCapabilities } from '../rvm/RvmCapabilities.js';
 import { notify } from '../diagnostics/notification-center.js';
 import { RvmViewer3D } from '../rvm-viewer/RvmViewer3D.js';
 import { parseRmssAttributes } from '../converters/rmss-attribute-parser.js';
+import { RvmSearchIndex } from '../rvm/RvmSearchIndex.js';
+import { RvmTagXmlStore } from '../rvm/RvmTagXmlStore.js';
 
 let _viewer = null;
 let _shortcutHandler = null;
 let _resizeObserver = null;
 let _capabilitiesListenerOff = null;
+let _toolChangedHandler = null;
+let _tagEventsOff = null;
 
-// ── Toolbar action labels ───────────────────────────────────────────────────
+// â”€â”€ Toolbar action labels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const ACTION_LABELS = {
   NAV_ORBIT: 'Orbit',
@@ -41,8 +45,8 @@ const ACTION_ICONS = {
   VIEW_FIT_ALL: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9V5h4"/><path d="M19 9V5h-4"/><path d="M5 15v4h4"/><path d="M19 15v4h-4"/></svg>',
   VIEW_FIT_SELECTION: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9V5h4"/><path d="M19 9V5h-4"/><path d="M5 15v4h4"/><path d="M19 15v4h-4"/><circle cx="12" cy="12" r="3"/></svg>',
   VIEW_TOGGLE_PROJECTION: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v18H3z"/><path d="m3 3 18 18"/><path d="m21 3-18 18"/></svg>',
-  SECTION_BOX: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
-  SECTION_PLANE_UP: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
+  SECTION_BOX: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" fill-opacity="0.16"/><path d="M4 10h16"/><path d="M10 4v16"/></svg>',
+  SECTION_PLANE_UP: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16h18"/><path d="M12 4v10"/><path d="m8.5 8.5 3.5-4 3.5 4"/></svg>',
   SECTION_DISABLE: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
   MEASURE_TOOL: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="8" rx="2" ry="2"/><path d="M6 8v4"/><path d="M10 8v4"/><path d="M14 8v4"/><path d="M18 8v4"/></svg>',
   VIEW_MARQUEE_ZOOM: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="12" height="12" rx="1" stroke-dasharray="3 2"/><circle cx="17" cy="17" r="3"/><path d="m21 21-2.15-2.15"/></svg>',
@@ -56,18 +60,37 @@ const ACTION_ICONS = {
 };
 
 const UPLOAD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><rect x="4" y="16" width="16" height="4" rx="1.5"/></svg>';
+const TOOL_ACTION_TO_MODE = Object.freeze({
+  NAV_ORBIT: 'orbit',
+  NAV_PAN: 'pan',
+  NAV_SELECT: 'select',
+  MEASURE_TOOL: 'measure',
+  VIEW_MARQUEE_ZOOM: 'zoom',
+});
 
-// ── Viewer stub (replaced by Agent 3 / RvmViewer3D) ────────────────────────
+function _setActiveToolButton(container, action) {
+  const buttons = container.querySelectorAll('.rvm-tool-btn[data-action]');
+  buttons.forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.action === action);
+  });
+}
+
+function _pulseButton(btn) {
+  btn.classList.add('is-pressed');
+  setTimeout(() => btn.classList.remove('is-pressed'), 160);
+}
+
+// â”€â”€ Viewer stub (replaced by Agent 3 / RvmViewer3D) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _createViewerStub(container) {
   const viewport = container.querySelector('.rvm-viewport');
   if (viewport) {
-    viewport.innerHTML = '<div class="rvm-placeholder">RVM Viewer initialising — load a .bundle.json to begin</div>';
+    viewport.innerHTML = '<div class="rvm-placeholder">RVM Viewer initializing - load a .bundle.json to begin</div>';
   }
   return { dispose() {} };
 }
 
-// ── Teardown ────────────────────────────────────────────────────────────────
+// â”€â”€ Teardown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _disposeRvmViewer() {
   if (_shortcutHandler) {
@@ -86,9 +109,17 @@ function _disposeRvmViewer() {
     _capabilitiesListenerOff();
     _capabilitiesListenerOff = null;
   }
+  if (_toolChangedHandler) {
+    window.removeEventListener('app:tool-changed', _toolChangedHandler);
+    _toolChangedHandler = null;
+  }
+  if (_tagEventsOff) {
+    _tagEventsOff();
+    _tagEventsOff = null;
+  }
 }
 
-// ── Capability banner ───────────────────────────────────────────────────────
+// â”€â”€ Capability banner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _renderCapabilityBanner(container, caps) {
   const banner = container.querySelector('#rvm-capability-banner');
@@ -99,65 +130,79 @@ function _renderCapabilityBanner(container, caps) {
   banner.dataset.mode = mode;
 }
 
-// ── Bundle file loader ──────────────────────────────────────────────────────
+// â”€â”€ Bundle file loader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _bindBundleLoader(container) {
-  const attrInput = container.querySelector('#rvm-attr-file-input');
-  if (attrInput) {
-    attrInput.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-          const text = await file.text();
-          const hierarchyJson = parseRmssAttributes(text);
-
-          emit(RuntimeEvents.FILE_LOADED, {
-              name: file.name + '.json',
-              source: 'rvm-tab',
-              payload: hierarchyJson,
-              kind: 'aveva-json'
-          });
-          notify({ type: 'info', message: `Converted RMSS Attributes to JSON hierarchy` });
-      } catch (err) {
-          notify({ type: 'error', message: `Failed to parse Attributes file: ${err.message}` });
-      }
-    });
-  }
-
-  const input = container.querySelector('#rvm-bundle-file-input');
+  const input = container.querySelector('#rvm-universal-file-input');
   if (!input) return;
+
   input.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
 
-    try {
-        const text = await file.text();
-        const json = JSON.parse(text);
+    // Separate RVM and its sidecars (ATT/TXT) if uploaded together
+    const rvmFiles = files.filter(f => f.name.toLowerCase().endsWith('.rvm') || f.name.toLowerCase().endsWith('.rev'));
+    const sidecars = files.filter(f => f.name.toLowerCase().endsWith('.att') || f.name.toLowerCase().endsWith('.txt'));
+    const otherFiles = files.filter(f => !rvmFiles.includes(f) && !sidecars.includes(f));
 
-        if (Array.isArray(json)) {
-            // It's a raw AVEVA hierarchy dump
-            emit(RuntimeEvents.FILE_LOADED, {
-                name: file.name,
-                source: 'rvm-tab',
-                payload: json,
-                kind: 'aveva-json'
-            });
-        } else {
-            // Standard .bundle.json manifest
-            emit(RuntimeEvents.FILE_LOADED, {
-                name: file.name,
-                source: 'rvm-tab',
-                payload: json,
-                kind: 'bundle'
-            });
-        }
-    } catch (err) {
-        notify({ type: 'error', message: `Failed to parse JSON file: ${err.message}` });
+    // 1. Process RVM + Sidecars together
+    for (const rvmFile of rvmFiles) {
+        emit(RuntimeEvents.FILE_LOADED, { 
+            name: rvmFile.name, 
+            source: 'rvm-tab', 
+            payload: rvmFile,
+            sidecars: sidecars, // Pass sidecars to RVM bridge
+            kind: 'raw-rvm' 
+        });
     }
+
+    // 2. Process standalone ATT files (only if no RVMs were uploaded)
+    if (rvmFiles.length === 0) {
+        for (const sidecar of sidecars) {
+            try {
+                const text = await sidecar.text();
+                const hierarchyJson = parseRmssAttributes(text, state.rvm?.routing);
+                if (!Array.isArray(hierarchyJson) || hierarchyJson.length === 0) {
+                    notify({ type: 'warning', message: 'No branch/fitting topology was parsed from attribute file.' });
+                }
+                emit(RuntimeEvents.FILE_LOADED, { name: sidecar.name + '.json', source: 'rvm-tab', payload: hierarchyJson, kind: 'aveva-json' });
+                notify({ type: 'info', message: `Converted RMSS Attributes to JSON hierarchy` });
+            } catch (err) {
+                notify({ type: 'error', message: `Failed to parse ${sidecar.name}: ${err.message}` });
+            }
+        }
+    }
+
+    // 3. Process remaining files (JSON, GLB)
+    for (const file of otherFiles) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      try {
+        if (ext === 'json') {
+          const text = await file.text();
+          const json = JSON.parse(text);
+          const isBundleManifest = Boolean(json) && typeof json === 'object' && json.schemaVersion === 'rvm-bundle/v1';
+          emit(RuntimeEvents.FILE_LOADED, { name: file.name, source: 'rvm-tab', payload: json, kind: isBundleManifest ? 'bundle' : 'aveva-json' });
+        } else if (ext === 'glb' || ext === 'gltf') {
+          const url = URL.createObjectURL(file);
+          const bundleId = `direct-glb-${Date.now()}`;
+          const mockManifest = {
+              schemaVersion: 'rvm-bundle/v1',
+              bundleId,
+              artifacts: { glb: url },
+              runtime: { units: 'mm', upAxis: 'Y', scale: 1, originOffset: [0,0,0] }
+          };
+          emit(RuntimeEvents.FILE_LOADED, { name: file.name, source: 'rvm-tab', payload: mockManifest, kind: 'bundle' });
+        }
+      } catch (err) {
+        notify({ type: 'error', message: `Failed to parse ${file.name}: ${err.message}` });
+      }
+    }
+    
+    e.target.value = ''; // Reset input
   });
 }
 
-// ── Search handler ──────────────────────────────────────────────────────────
+// â”€â”€ Search handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 
@@ -180,32 +225,40 @@ function _bindSearch(container) {
   let _debounce = null;
   input.addEventListener('input', () => {
     clearTimeout(_debounce);
-    _debounce = setTimeout(() => {
+    _debounce = setTimeout(async () => {
       const query = input.value.trim();
       emit(RuntimeEvents.RVM_SEARCH_CHANGED, { query });
 
-      if (_viewer && _viewer.searchIndex) {
-         const results = _viewer.searchIndex.search(query);
-         const list = container.querySelector('#rvm-search-results');
-         if (list) {
-            list.innerHTML = results.map(r => `<li style="cursor:pointer;" data-id="${r.canonicalObjectId}">${r.name || r.canonicalObjectId}</li>`).join('');
-            const items = list.querySelectorAll('li');
-            items.forEach(li => {
-                li.addEventListener('click', () => {
-                   if (_viewer && li.dataset.id) {
-                       _viewer.selectByCanonicalId(li.dataset.id);
-                       _viewer.fitSelection();
-                   }
-                });
-            });
-         }
+      const viewer = _viewer;
+      if (!viewer || !viewer.searchIndex) return;
+      if (viewer.searchIndex.build && !viewer.searchIndex.indexReady) {
+        await viewer.searchIndex.build();
       }
+      const results = viewer.searchIndex.search(query);
+      const list = container.querySelector('#rvm-search-results');
+      if (!list) return;
+      list.innerHTML = results.map((r) => {
+        const label = escapeHtml(`${r.kind ? `[${r.kind}] ` : ''}${r.name || r.canonicalObjectId}`);
+        return `<li class="rvm-search-item" style="cursor:pointer;" data-id="${escapeHtml(r.canonicalObjectId)}">${label}</li>`;
+      }).join('');
+      const items = list.querySelectorAll('.rvm-search-item');
+      items.forEach((li) => {
+        li.addEventListener('click', () => {
+          const currentViewer = _viewer;
+          const id = li.dataset.id;
+          if (!currentViewer || !id || typeof currentViewer.selectByCanonicalId !== 'function') return;
+          currentViewer.selectByCanonicalId(id);
+          currentViewer.fitSelection();
+          list.querySelectorAll('.rvm-search-item').forEach((item) => item.classList.remove('is-selected'));
+          li.classList.add('is-selected');
+        });
+      });
     }, 180);
   });
 }
 
 
-// ── Keyboard shortcuts ──────────────────────────────────────────────────────
+// â”€â”€ Keyboard shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 function _bindShortcuts(container) {
@@ -215,23 +268,22 @@ function _bindShortcuts(container) {
   }
   _shortcutHandler = (e) => {
     if (!container.isConnected) return;
+    if (e.key === 'Escape') {
+        _closeTagModal(container);
+        _viewer?.clearSelection?.();
+        _viewer?.setNavMode?.('orbit');
+        _setActiveToolButton(container, 'NAV_ORBIT');
+        return;
+    }
     const tag = document.activeElement?.tagName?.toLowerCase();
     if (tag === 'input' || tag === 'textarea') return;
     if (e.key === 'f' || e.key === 'F') { _viewer?.fitAll?.(); }
-    if (e.key === 'Escape') {
-        _viewer?.clearSelection?.();
-        _viewer?.setNavMode?.('orbit');
-        container.querySelectorAll('.rvm-tool-btn').forEach(b => {
-            b.classList.remove('active');
-            if (b.dataset.action === 'NAV_ORBIT') b.classList.add('active');
-        });
-    }
   };
   window.addEventListener('keydown', _shortcutHandler);
 }
 
 
-// ── HTML scaffold ───────────────────────────────────────────────────────────
+// â”€â”€ HTML scaffold â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _buildHTML(caps) {
   // Always render the Load RVM button. If the local backend is dead, clicking it will trigger the GitHub PAT prompt.
@@ -240,30 +292,24 @@ function _buildHTML(caps) {
 <div class="geo-tab geo-theme-navisdark rvm-tab-root">
   <div class="geo-top-ribbon" id="rvm-top-ribbon">
     <div class="rvm-ribbon-section">
-      <label class="rvm-btn rvm-btn-file" title="Load pre-converted .bundle.json">
-        ${UPLOAD_ICON}<span>Load Bundle</span>
-        <input type="file" id="rvm-bundle-file-input" accept=".json" style="display:none">
+      <label class="rvm-btn rvm-btn-file" title="Load dataset (RVM, REV, JSON Bundle, ATT TXT, GLB)">
+        ${UPLOAD_ICON}<span>Import Dataset</span>
+        <input type="file" id="rvm-universal-file-input" multiple accept=".json,.rvm,.rev,.txt,.att,.glb,.gltf" style="display:none">
       </label>
-      ${isStaticMode ? '' : `
-      <label class="rvm-btn rvm-btn-file rvm-btn-assisted" title="Upload raw .rvm for conversion">
-        ${UPLOAD_ICON}<span>Load RVM</span>
-        <input type="file" id="rvm-raw-file-input" accept=".rvm" style="display:none">
-      </label>
-      `}
-      <label class="rvm-btn rvm-btn-file rvm-btn-assisted" title="Convert RMSS Attributes file to JSON hierarchy">
-        ${UPLOAD_ICON}<span>Att Txt -> Json</span>
-        <input type="file" id="rvm-attr-file-input" accept=".txt" style="display:none">
-      </label>
+      <button class="rvm-btn" id="rvm-settings-btn" title="Open Interchange Mapping Settings" style="padding:4px 8px; cursor:pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span>Settings</span>
+      </button>
     </div>
     <div class="rvm-ribbon-section rvm-ribbon-nav">
       ${Object.entries(ACTION_ICONS).map(([id, icon]) => `
-        <button class="rvm-tool-btn" data-action="${id}" title="${ACTION_LABELS[id] || id}">
+        <button class="rvm-tool-btn ${id === 'NAV_ORBIT' ? 'is-active' : ''}" data-action="${id}" title="${ACTION_LABELS[id] || id}">
           ${icon}<span>${ACTION_LABELS[id] || id}</span>
         </button>
       `).join('')}
     </div>
     <div class="rvm-ribbon-section rvm-ribbon-search">
-      <input type="search" id="rvm-search-input" placeholder="Search objects…" autocomplete="off">
+      <input type="search" id="rvm-search-input" placeholder="Search objects..." autocomplete="off">
     </div>
   </div>
   <div id="rvm-capability-banner" class="rvm-capability-banner"></div>
@@ -276,6 +322,22 @@ function _buildHTML(caps) {
     </div>
     <div class="rvm-viewport" id="rvm-viewport">
       <canvas class="rvm-canvas" id="rvm-canvas"></canvas>
+      <!-- Section Box Adjustment Panel -->
+      <div id="rvm-section-panel" style="position:absolute; top:112px; left:16px; width:260px; background:rgba(12,22,38,0.96); color:#e8f3ff; padding:14px 16px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.4); display:none; z-index:15; border:1px solid rgba(74,158,255,0.25);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <strong style="font-size:13px; color:#7ab3ff; display:inline-flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16"/><path d="M10 4v16"/></svg><span>Section Box</span></strong>
+          <button id="btn-rvm-section-close" style="background:none;border:none;color:#888;cursor:pointer;font-size:16px;">&times;</button>
+        </div>
+        <div style="display:grid; gap:10px; font-size:11px;">
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Min X <span id="lbl-rx-min">0</span></label><input type="range" id="rx-min" min="0" max="100" value="0" style="width:100%; accent-color:#4a9eff;"></div>
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Max X <span id="lbl-rx-max">100</span></label><input type="range" id="rx-max" min="0" max="100" value="100" style="width:100%; accent-color:#4a9eff;"></div>
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Min Y <span id="lbl-ry-min">0</span></label><input type="range" id="ry-min" min="0" max="100" value="0" style="width:100%; accent-color:#4a9eff;"></div>
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Max Y <span id="lbl-ry-max">100</span></label><input type="range" id="ry-max" min="0" max="100" value="100" style="width:100%; accent-color:#4a9eff;"></div>
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Min Z <span id="lbl-rz-min">0</span></label><input type="range" id="rz-min" min="0" max="100" value="0" style="width:100%; accent-color:#4a9eff;"></div>
+          <div><label style="color:#9db7d8; display:flex; justify-content:space-between;">Max Z <span id="lbl-rz-max">100</span></label><input type="range" id="rz-max" min="0" max="100" value="100" style="width:100%; accent-color:#4a9eff;"></div>
+        </div>
+        <button id="btn-rvm-section-fit" style="margin-top:12px; width:100%; padding:6px; background:#1a3a5c; border:1px solid #4a9eff; border-radius:6px; color:#7ab3ff; cursor:pointer; font-size:11px;">Reset to Model Bounds</button>
+      </div>
     </div>
 
 
@@ -306,22 +368,87 @@ function _buildHTML(caps) {
     </div>
 
   </div>
+  <div id="rvm-tag-modal" class="rvm-tag-modal" aria-hidden="true">
+    <div class="rvm-tag-modal-card">
+      <div class="rvm-tag-modal-title">Create Review Tag</div>
+      <label class="rvm-tag-modal-row">Tag ID
+        <input id="rvm-tag-id-input" type="text" placeholder="TAG-..." />
+      </label>
+      <label class="rvm-tag-modal-row">Title
+        <input id="rvm-tag-text-input" type="text" placeholder="Enter tag text" />
+      </label>
+      <label class="rvm-tag-modal-row">Severity
+        <select id="rvm-tag-severity-input">
+          <option value="info">Info</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+      <label class="rvm-tag-modal-row">Target
+        <input id="rvm-tag-target-input" type="text" readonly />
+      </label>
+      <div class="rvm-tag-modal-actions">
+        <button class="rvm-btn" id="rvm-tag-cancel-btn" type="button">Cancel</button>
+        <button class="rvm-btn" id="rvm-tag-create-btn" type="button">Create</button>
+      </div>
+    </div>
+  </div>
 </div>`.trim();
 }
 
-// ── Toolbar action dispatch ─────────────────────────────────────────────────
+// â”€â”€ Toolbar action dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _bindToolbarActions(container) {
+  const sectionPanel = container.querySelector('#rvm-section-panel');
+  let _rvmModelBox = null;
+  const showSectionPanel = () => {
+    if (!sectionPanel) return;
+    sectionPanel.style.display = 'block';
+    _rvmModelBox = _viewer?.getModelBounds?.() || _rvmModelBox;
+  };
+
+  container.querySelector('#btn-rvm-section-close')?.addEventListener('click', () => { if(sectionPanel) sectionPanel.style.display = 'none'; });
+  container.querySelector('#btn-rvm-section-fit')?.addEventListener('click', () => {
+    ['rx-min','ry-min','rz-min'].forEach(id => { const el = container.querySelector(`#${id}`); if(el){el.value=0; const lbl=container.querySelector(`#lbl-${id}`); if(lbl)lbl.textContent='0%';} });
+    ['rx-max','ry-max','rz-max'].forEach(id => { const el = container.querySelector(`#${id}`); if(el){el.value=100; const lbl=container.querySelector(`#lbl-${id}`); if(lbl)lbl.textContent='100%';} });
+    _viewer?.resetSectionToModel?.();
+  });
+
+  function applyRvmSliders() {
+    if (!_rvmModelBox || !_viewer?.setSectionClipBounds) return;
+    const pct = id => Number(container.querySelector(`#${id}`)?.value ?? 0) / 100;
+    const { min, max } = _rvmModelBox;
+    const rx = max.x - min.x, ry = max.y - min.y, rz = max.z - min.z;
+    _viewer.setSectionClipBounds({
+      minX: min.x + rx * pct('rx-min'), maxX: min.x + rx * pct('rx-max'),
+      minY: min.y + ry * pct('ry-min'), maxY: min.y + ry * pct('ry-max'),
+      minZ: min.z + rz * pct('rz-min'), maxZ: min.z + rz * pct('rz-max'),
+    });
+  }
+
+  ['rx-min','rx-max','ry-min','ry-max','rz-min','rz-max'].forEach(id => {
+    container.querySelector(`#${id}`)?.addEventListener('input', e => {
+      const lbl = container.querySelector(`#lbl-${id}`);
+      if (lbl) lbl.textContent = e.target.value + '%';
+      applyRvmSliders();
+    });
+  });
+
   const ribbon = container.querySelector('#rvm-top-ribbon');
   if (!ribbon) return;
   ribbon.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
+    _pulseButton(btn);
+    const mode = TOOL_ACTION_TO_MODE[action];
+    if (mode) {
+      _viewer?.setNavMode?.(mode);
+      _setActiveToolButton(container, action);
+      return;
+    }
     switch (action) {
-      case 'NAV_ORBIT':   _viewer?.setNavMode?.('orbit'); break;
-      case 'NAV_PAN':     _viewer?.setNavMode?.('pan'); break;
-      case 'NAV_SELECT':  _viewer?.setNavMode?.('select'); break;
       case 'NAV_PLAN_X':  _viewer?.snapToPreset?.('TOP'); break;
       case 'NAV_ROTATE_Y': _viewer?.snapToPreset?.('FRONT'); break;
       case 'NAV_ROTATE_Z': _viewer?.snapToPreset?.('RIGHT'); break;
@@ -332,14 +459,24 @@ function _bindToolbarActions(container) {
       case 'VIEW_FIT_ALL': _viewer?.fitAll?.(); break;
       case 'VIEW_FIT_SELECTION': _viewer?.fitSelection?.(); break;
       case 'VIEW_TOGGLE_PROJECTION': _viewer?.toggleProjection?.(); break;
-      case 'SECTION_BOX': _viewer?.setSectionMode?.('BOX'); break;
-      case 'SECTION_PLANE_UP': _viewer?.setSectionMode?.('PLANE_UP'); break;
-      case 'SECTION_DISABLE': _viewer?.disableSection?.(); break;
+      case 'SECTION_BOX': 
+        _viewer?.setSectionMode?.('BOX'); 
+        showSectionPanel();
+        break;
+      case 'SECTION_PLANE_UP':
+        _viewer?.setSectionMode?.('PLANE_UP');
+        showSectionPanel();
+        break;
+      case 'SECTION_DISABLE': 
+        _viewer?.disableSection?.(); 
+        if (sectionPanel) sectionPanel.style.display = 'none';
+        break;
+      default: break;
     }
   });
 }
 
-// ── ResizeObserver ──────────────────────────────────────────────────────────
+// â”€â”€ ResizeObserver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _bindResize(container) {
   if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
@@ -351,7 +488,20 @@ function _bindResize(container) {
   _resizeObserver.observe(viewport);
 }
 
-// ── Tab event listener (TAB_CHANGED) ───────────────────────────────────────
+function _bindToolStateBridge(container) {
+  if (_toolChangedHandler) {
+    window.removeEventListener('app:tool-changed', _toolChangedHandler);
+    _toolChangedHandler = null;
+  }
+  _toolChangedHandler = (event) => {
+    const mode = String(event?.detail?.mode || '').toLowerCase();
+    const action = Object.entries(TOOL_ACTION_TO_MODE).find(([, mapped]) => mapped === mode)?.[0];
+    if (action) _setActiveToolButton(container, action);
+  };
+  window.addEventListener('app:tool-changed', _toolChangedHandler);
+}
+
+// â”€â”€ Tab event listener (TAB_CHANGED) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 function _bindTabListener() {
@@ -368,26 +518,30 @@ function _bindTabListener() {
     if (_viewer && payload && payload.gltf && payload.gltf.scene) {
         _viewer.setModel(payload.gltf.scene, payload.manifest?.runtime?.upAxis);
         _viewer.fitAll();
+        _viewer.setNavMode?.('orbit');
+        const root = document.querySelector('.rvm-tab-root');
+        if (root) _setActiveToolButton(root, 'NAV_ORBIT');
 
         if (payload.indexJson && payload.identityMap) {
             _viewer.searchIndex = new RvmSearchIndex(payload.indexJson, payload.identityMap);
             _viewer.searchIndex.build();
+            _viewer.tagStore = new RvmTagXmlStore(payload.identityMap, payload.manifest?.bundleId || state.rvm.activeBundle);
+            _viewer.tagStore.getAllTags().forEach((tag) => _viewer.addTag(tag));
         }
 
         const container = document.querySelector('.rvm-tab-root');
         if (container && payload.indexJson && payload.indexJson.nodes) {
             const tree = container.querySelector('#rvm-hierarchy-tree');
             if (tree) {
-                if (!_viewer.treeModel) {
-                    import('../rvm/RvmTreeModel.js').then(module => {
-                        _viewer.treeModel = new module.RvmTreeModel(payload.indexJson, { viewer: _viewer });
-                        _viewer.treeModel.build();
-                        _viewer.treeModel.renderTree(tree);
-                    });
-                } else {
+                import('../rvm/RvmTreeModel.js').then(module => {
+                    if (!_viewer) return;
+                    _viewer.treeModel = new module.RvmTreeModel(payload.indexJson, { viewer: _viewer });
+                    _viewer.treeModel.build();
                     _viewer.treeModel.renderTree(tree);
-                }
+                });
             }
+            const searchList = container.querySelector('#rvm-search-results');
+            if (searchList) searchList.innerHTML = '';
         }
 
         if (container) {
@@ -402,17 +556,73 @@ function _bindTabListener() {
     }
   };
 
+  const nodeSelectedCallback = (payload) => {
+      const canonicalId = payload?.canonicalId;
+      const root = document.querySelector('.rvm-tab-root');
+      const attrContent = root?.querySelector('#rvm-attributes-content');
+      if (!attrContent) return;
+
+      // Highlight the hierarchy tree node
+      if (root) {
+          root.querySelectorAll('#rvm-hierarchy-tree li').forEach(li => li.classList.remove('is-selected'));
+          if (canonicalId) {
+              const match = root.querySelector(`#rvm-hierarchy-tree li[data-id="${CSS.escape(canonicalId)}"]`);
+              if (match) { match.classList.add('is-selected'); match.scrollIntoView({ block: 'nearest' }); }
+          }
+      }
+
+      if (!canonicalId) {
+          attrContent.innerHTML = '<div style="padding: 10px; color: #888;">No selection</div>';
+          return;
+      }
+
+      // Look up in the pre-built search index entries (correct property)
+      const entry = _viewer?.searchIndex?._searchableEntries?.find(e => e.canonicalObjectId === canonicalId);
+      if (!entry) {
+          attrContent.innerHTML = `<div style="padding: 10px; font-weight:bold; color:#ccc;">${escapeHtml(canonicalId)}</div><div style="padding: 6px 10px; color: #888;">No attribute data available</div>`;
+          return;
+      }
+
+      let html = `<div style="padding:8px 10px; font-weight:bold; font-size:12px; border-bottom:1px solid #444; color:#7ab3ff; margin-bottom:4px;">${escapeHtml(entry.name || canonicalId)}</div>`;
+      html += `<div style="padding:2px 10px 4px; font-size:10px; color:#666;">${escapeHtml(entry.kind || '')}</div>`;
+
+      if (entry.attrs && Object.keys(entry.attrs).length > 0) {
+          html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
+          for (const [key, val] of Object.entries(entry.attrs)) {
+              const isCoord = typeof val === 'string' && /^[\{\[]/i.test(val);
+              html += `<tr class="rvm-attr-row" style="vertical-align:top;">
+                          <td style="padding:3px 6px 3px 10px; color:#8ab; white-space:nowrap; border-bottom:1px solid #2a2d35; font-weight:500;">${escapeHtml(key)}</td>
+                          <td style="padding:3px 10px 3px 4px; color:#ddd; word-break:break-all; border-bottom:1px solid #2a2d35; font-size:${isCoord ? '9px' : '11px'};">${escapeHtml(String(val))}</td>
+                       </tr>`;
+          }
+          html += '</table>';
+      } else {
+          html += '<div style="padding:10px; color:#888;">No attribute data</div>';
+      }
+      attrContent.innerHTML = html;
+
+      // Re-apply any active search filter
+      const filterInput = root?.querySelector('#rvm-attr-search');
+      if (filterInput && filterInput.value.trim()) {
+          const q = filterInput.value.trim().toLowerCase();
+          attrContent.querySelectorAll('.rvm-attr-row').forEach(row => {
+              row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+          });
+      }
+  };
 
   on(RuntimeEvents.TAB_CHANGED, tabChangedCallback);
   on(RuntimeEvents.RVM_MODEL_LOADED, modelLoadedCallback);
+  on(RuntimeEvents.RVM_NODE_SELECTED, nodeSelectedCallback);
 
   _capabilitiesListenerOff = () => {
     off(RuntimeEvents.TAB_CHANGED, tabChangedCallback);
     off(RuntimeEvents.RVM_MODEL_LOADED, modelLoadedCallback);
+    off(RuntimeEvents.RVM_NODE_SELECTED, nodeSelectedCallback);
   };
 }
 
-// ── Public render function ─────────────────────────────────────────────────
+// â”€â”€ Public render function â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function renderViewer3DRvm(container) {
   _disposeRvmViewer();
@@ -427,6 +637,7 @@ export function renderViewer3DRvm(container) {
   _bindSearch(container);
   _bindToolbarActions(container);
   _bindResize(container);
+  _bindToolStateBridge(container);
   _bindShortcuts(container);
   _bindTabListener();
   _bindTags(container);
@@ -438,63 +649,20 @@ export function renderViewer3DRvm(container) {
       _viewer = new RvmViewer3D(viewport, { identityMap: state.rvm.identityMap });
   }
 
-  // Async capability probe — update banner once resolved
-  detectRvmCapabilities(null).then((resolvedCaps) => {
-    state.rvm.capabilities = resolvedCaps;
-    _renderCapabilityBanner(container, resolvedCaps);
+  const settingsBtn = container.querySelector('#rvm-settings-btn');
+  if (settingsBtn) {
+      settingsBtn.addEventListener('click', () => {
+          window.dispatchEvent(new CustomEvent('app:switch-tab', { detail: { tabId: 'adapter-mapping' } }));
+      });
+  }
 
-    // If assisted mode is resolved later, we need to update the HTML to show the raw import button
-    if (resolvedCaps.deploymentMode === 'assisted' && !container.querySelector('#rvm-raw-file-input')) {
-        const ribbon = container.querySelector('.rvm-ribbon-section');
-        if (ribbon) {
-            // Use DOM manipulation instead of innerHTML to avoid stripping existing event listeners
-            const label = document.createElement('label');
-            label.className = 'rvm-btn rvm-btn-file rvm-btn-assisted';
-            label.title = 'Upload raw .rvm for conversion';
-
-            const span = document.createElement('span');
-            span.textContent = 'Load RVM';
-
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.id = 'rvm-raw-file-input';
-            input.accept = '.rvm';
-            input.style.display = 'none';
-
-            label.innerHTML = UPLOAD_ICON;
-            label.appendChild(span);
-            label.appendChild(input);
-
-            ribbon.appendChild(label);
-
-            // Bind the newly added raw input
-            input.addEventListener('change', async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                emit(RuntimeEvents.FILE_LOADED, {
-                    name: file.name,
-                    source: 'rvm-tab',
-                    payload: file,
-                    kind: 'raw-rvm'
-                });
-            });
-        }
-    }
-
-    // Ensure raw input is bound if it exists (e.g., if injected by test or actual assisted deployment)
-    const existingRawInput = container.querySelector('#rvm-raw-file-input');
-    if (existingRawInput) {
-        existingRawInput.addEventListener('change', async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            emit(RuntimeEvents.FILE_LOADED, {
-                name: file.name,
-                source: 'rvm-tab',
-                payload: file,
-                kind: 'raw-rvm'
-            });
-        });
-    }
+  // Async capability probe â€” update banner once resolved
+  import('../converters/rvm-helper-bridge.js').then(({ RvmHelperBridge }) => {
+    const bridge = new RvmHelperBridge();
+    detectRvmCapabilities(() => bridge.probe()).then((resolvedCaps) => {
+      state.rvm.capabilities = resolvedCaps;
+      _renderCapabilityBanner(container, resolvedCaps);
+    });
   });
 
   return _disposeRvmViewer;
@@ -527,19 +695,72 @@ function _renderTagList(container, filter = 'all') {
         else if (sev === 'low') color = '#22aa55';
 
         return `<div class="rvm-tag-item" data-id="${escapeHtml(t.id)}" style="padding:8px;border-left:4px solid ${color};margin-bottom:4px;background:#2a2a2a;cursor:pointer;">
-            <div style="font-weight:bold;margin-bottom:4px;">${escapeHtml(t.text || t.id)}</div>
-            <div style="font-size:10px;color:#888;">Severity: ${escapeHtml(sev.toUpperCase())}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+              <div style="font-weight:bold;">${escapeHtml(t.text || t.id)}</div>
+              <div style="display:flex;gap:4px;">
+                <button class="rvm-tag-jump" type="button" data-action="jump" data-id="${escapeHtml(t.id)}" title="Jump to tag">Open</button>
+                <button class="rvm-tag-delete" type="button" data-action="delete" data-id="${escapeHtml(t.id)}" title="Delete tag">Del</button>
+              </div>
+            </div>
+            <div style="font-size:10px;color:#888;">ID: ${escapeHtml(t.id)} | Severity: ${escapeHtml(sev.toUpperCase())}</div>
+            <div style="font-size:10px;color:#888;">Target: ${escapeHtml(t.canonicalObjectId || '-')}</div>
         </div>`;
     }).join('');
 
-    // Add click listeners to jump to tag
     const items = listEl.querySelectorAll('.rvm-tag-item');
-    items.forEach(item => {
-        item.addEventListener('click', () => {
-            const id = item.dataset.id;
-            _viewer.jumpToTag(id);
-        });
+    items.forEach((item) => {
+      item.addEventListener('click', (event) => {
+        const btn = event.target.closest('button[data-action]');
+        const tagId = btn?.dataset.id || item.dataset.id;
+        if (!_viewer || !tagId) return;
+        if (btn?.dataset.action === 'delete') {
+          _viewer.tagStore.deleteTag(tagId);
+          _viewer.removeTag(tagId);
+          return;
+        }
+        _viewer.jumpToTag(tagId);
+        const tag = _viewer.tagStore.getTag(tagId);
+        if (tag?.canonicalObjectId) {
+          _viewer.selectByCanonicalId(tag.canonicalObjectId);
+          _viewer.fitSelection();
+        }
+      });
     });
+}
+
+function downloadText(text, filename, mimeType) {
+  const blob = new Blob([text], { type: mimeType || 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename || 'download.txt';
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+function _openTagModal(container, selection) {
+  const modal = container.querySelector('#rvm-tag-modal');
+  const idInput = container.querySelector('#rvm-tag-id-input');
+  const textInput = container.querySelector('#rvm-tag-text-input');
+  const sevInput = container.querySelector('#rvm-tag-severity-input');
+  const targetInput = container.querySelector('#rvm-tag-target-input');
+  if (!modal || !idInput || !textInput || !sevInput || !targetInput) return;
+  idInput.value = `TAG-${Date.now()}`;
+  textInput.value = '';
+  sevInput.value = 'info';
+  targetInput.value = selection?.canonicalObjectId || '';
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+  textInput.focus();
+}
+
+function _closeTagModal(container) {
+  const modal = container.querySelector('#rvm-tag-modal');
+  if (!modal) return;
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
 }
 
 function _bindTags(container) {
@@ -550,15 +771,24 @@ function _bindTags(container) {
       });
   }
 
-  // Hook into RuntimeEvents to auto-refresh the tag list
-  on(RuntimeEvents.RVM_TAG_CREATED, () => {
-      const filter = filterSelect ? filterSelect.value : 'all';
-      _renderTagList(container, filter);
-  });
-  on(RuntimeEvents.RVM_TAG_DELETED, () => {
-      const filter = filterSelect ? filterSelect.value : 'all';
-      _renderTagList(container, filter);
-  });
+  if (_tagEventsOff) {
+    _tagEventsOff();
+    _tagEventsOff = null;
+  }
+  const onCreated = () => {
+    const filter = filterSelect ? filterSelect.value : 'all';
+    _renderTagList(container, filter);
+  };
+  const onDeleted = () => {
+    const filter = filterSelect ? filterSelect.value : 'all';
+    _renderTagList(container, filter);
+  };
+  on(RuntimeEvents.RVM_TAG_CREATED, onCreated);
+  on(RuntimeEvents.RVM_TAG_DELETED, onDeleted);
+  _tagEventsOff = () => {
+    off(RuntimeEvents.RVM_TAG_CREATED, onCreated);
+    off(RuntimeEvents.RVM_TAG_DELETED, onDeleted);
+  };
 
   const exportBtn = container.querySelector('#rvm-export-tags-btn');
   const importInput = container.querySelector('#rvm-import-tags-input');
@@ -579,6 +809,9 @@ function _bindTags(container) {
         const xmlText = await file.text();
         if (_viewer && _viewer.tagStore) {
             _viewer.tagStore.importFromXml(xmlText);
+            const tags = _viewer.tagStore.getAllTags();
+            tags.forEach((tag) => _viewer.addTag(tag));
+            _renderTagList(container, filterSelect ? filterSelect.value : 'all');
             notify({ type: 'success', message: 'Tags imported successfully' });
         } else {
             notify({ type: 'warning', message: 'No model loaded to import tags into' });
@@ -599,23 +832,56 @@ function _bindTags(container) {
          notify({ type: 'warning', message: 'Select an object first to attach a tag.' });
          return;
       }
+      _openTagModal(container, selection);
+    });
+  }
 
-      const text = prompt('Enter tag description:');
-      if (!text) return;
+  const cancelBtn = container.querySelector('#rvm-tag-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => _closeTagModal(container));
+  }
 
-      const sev = prompt('Enter severity (high, medium, low, info):', 'info');
-
-      // Create tag using current camera state and selection
+  const createBtn = container.querySelector('#rvm-tag-create-btn');
+  if (createBtn) {
+    createBtn.addEventListener('click', () => {
+      if (!_viewer || !_viewer.tagStore) return;
+      const idInput = container.querySelector('#rvm-tag-id-input');
+      const textInput = container.querySelector('#rvm-tag-text-input');
+      const sevInput = container.querySelector('#rvm-tag-severity-input');
+      const targetInput = container.querySelector('#rvm-tag-target-input');
+      const canonicalObjectId = String(targetInput?.value || '').trim();
+      const text = String(textInput?.value || '').trim();
+      const id = String(idInput?.value || '').trim();
+      const severity = String(sevInput?.value || 'info').toLowerCase();
+      if (!canonicalObjectId) {
+        notify({ type: 'warning', message: 'No target selected for this tag.' });
+        return;
+      }
+      if (!text) {
+        notify({ type: 'warning', message: 'Tag text is required.' });
+        return;
+      }
       const view = _viewer.getSavedView();
-      const tag = _viewer.tagStore.createTag(selection.canonicalObjectId, {
-         text: text,
-         severity: sev || 'info',
-         cameraState: view.camera,
-         worldPosition: view.camera.target
+      const worldAnchor = _viewer.getSelectionAnchor?.() || view?.camera?.target || null;
+      const tag = _viewer.tagStore.createTag({
+        id: id || undefined,
+        canonicalObjectId,
+        text,
+        severity,
+        cameraState: view.camera,
+        worldPosition: worldAnchor
       });
-
       _viewer.addTag(tag);
+      _closeTagModal(container);
       notify({ type: 'success', message: 'Tag created successfully.' });
     });
   }
+
+  const modal = container.querySelector('#rvm-tag-modal');
+  if (modal) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) _closeTagModal(container);
+    });
+  }
 }
+
